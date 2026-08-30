@@ -20,3 +20,7 @@ backend/.env
 *.log
 npm-debug.log*
 .DS_Store
+
+# pm2 / runtime
+.pm2/
+powerx-logs/
