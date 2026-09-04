@@ -397,6 +397,10 @@ function createTables() {
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
   ensureColumn('system_security', 'carrier_lock_password', "TEXT DEFAULT 'Dawood'");
+  // Callback providers (IKANGOO-style) send a unique {id} per SMS. Storing the
+  // resulting sms_records.id lets a retried callback return the original row
+  // instead of inserting - and paying for - the same message twice.
+  ensureColumn('api_integration_seen', 'sms_record_id', 'INTEGER');
   const sc = db.get('SELECT COUNT(*) AS c FROM system_security');
   if (!sc || sc.c === 0) {
     db.run(`INSERT INTO system_security (admin_security_code) VALUES ('Dawood')`);

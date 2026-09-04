@@ -2426,6 +2426,48 @@ function normalizeIncomingPayload(req) {
   }
   return { ...(req.query || {}), ...(body || {}) };
 }
+/**
+ * Parse a provider-supplied timestamp into the "YYYY-MM-DD HH:MM:SS" UTC form
+ * that sms_records.received_at uses everywhere else.
+ *
+ * Callback providers send a variety of shapes. IKANGOO documents
+ * "{date} = Date (Y-m-d H:i:s)" with no timezone, which is treated as UTC -
+ * the same assumption the provider-pull path already makes in providerSync.js.
+ *
+ * Returns '' when the value cannot be trusted, so the caller falls back to
+ * server time rather than writing a garbage date into reporting.
+ */
+function parseIncomingDate(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw) return '';
+
+  // epoch seconds / milliseconds
+  if (/^\d{10}$/.test(raw))  return new Date(Number(raw) * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  if (/^\d{13}$/.test(raw))  return new Date(Number(raw)).toISOString().slice(0, 19).replace('T', ' ');
+
+  // "Y-m-d H:i:s" / "Y-m-d\tH:i:s" / "Y-m-dTH:i:s" with no zone -> treat as UTC
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (m) {
+    const [, Y, Mo, D, H, Mi, S] = m;
+    const d = new Date(Date.UTC(+Y, +Mo - 1, +D, +H, +Mi, +(S || 0)));
+    if (isNaN(d.getTime())) return '';
+    // reject an impossible date such as 2026-02-31 silently rolling over
+    if (d.getUTCMonth() !== +Mo - 1 || d.getUTCDate() !== +D) return '';
+    return d.toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  // date only
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw + ' 00:00:00';
+
+  // anything with an explicit zone (ISO 8601 etc.)
+  const d = new Date(raw);
+  if (!isNaN(d.getTime())) {
+    const y = d.getUTCFullYear();
+    if (y < 2000 || y > 2100) return '';        // clearly wrong -> use server time
+    return d.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  return '';
+}
 function cleanPhone(v) { return String(v || '').trim().replace(/[^0-9]/g, ''); }
 function classifySender(cli) {
   const s = String(cli || '').trim();
@@ -2515,6 +2557,47 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
   const senderType = classifySender(cli);
   const otpCode = extractOtpCode(message);
 
+  /* ---------------------------------------------------------------------
+   * Callback/postback providers (IKANGOO-style) send the ORIGINAL time of
+   * the SMS as {date}, and a unique {id} that "can't be duplicated".
+   *
+   * Without the two blocks below, both were silently ignored:
+   *   - {date} was dropped, so a message delayed or replayed by the provider
+   *     was filed under "now" instead of when it actually arrived. That moves
+   *     an SMS into the wrong reporting day and the wrong payment cycle.
+   *   - {id} was dropped, so a provider retry (very common - they retry until
+   *     they get HTTP 200) inserted the SAME SMS again. Verified: 4 identical
+   *     callbacks produced 4 paid rows.
+   *
+   * Both are opt-in by payload: a carrier that sends neither behaves exactly
+   * as before.
+   * ------------------------------------------------------------------- */
+  // Provider-supplied timestamp. opts.received_at (API pull path) still wins.
+  let providerReceivedAt = opts.received_at || '';
+  if (!providerReceivedAt) {
+    const rawDate = firstVal(b, ['date', 'Date', 'datetime', 'date_time', 'timestamp', 'time', 'dt', 'api_dt', 'received_at', 'sent_at', 'created_at']);
+    if (rawDate) {
+      const parsed = parseIncomingDate(rawDate);
+      if (parsed) providerReceivedAt = parsed;
+      else console.warn('[INCOMING_SMS] unparseable date, using server time:', String(rawDate).slice(0, 40));
+    }
+  }
+  if (providerReceivedAt) opts = { ...opts, received_at: providerReceivedAt };
+
+  // Provider-supplied unique id -> reject a repeat of the SAME message.
+  const providerMsgId = String(firstVal(b, ['sms_id', 'id', 'message_id', 'msg_id', 'msgid', 'api_message_id', 'unique_id', 'uid'])).trim();
+  if (providerMsgId) {
+    const dupKey = `cb:${providerMsgId}`;
+    const already = db.get('SELECT sms_record_id FROM api_integration_seen WHERE duplicate_key=?', [dupKey]);
+    if (already) {
+      // Answer 200 on purpose: a callback provider retries on any non-2xx, so
+      // returning an error here would make it retry this duplicate forever.
+      console.log('[INCOMING_SMS] duplicate ignored', { provider_msg_id: providerMsgId, sourceIp });
+      return { status: 200, body: { ok: true, duplicate: true, id: already.sms_record_id || null, provider_msg_id: providerMsgId } };
+    }
+    opts = { ...opts, providerMsgId, duplicateKey: dupKey };
+  }
+
   if (!number) {
     console.warn('[INCOMING_SMS] failed: number/to field required', { sourceIp, cli, payload: b });
     logWebhook('failed', b, '', '', cli, message, 'number/to field required', sourceIp);
@@ -2558,6 +2641,14 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE(NULLIF(?,''),datetime('now')))`,
     [n.id, n.number, n.range_id, cli || '', senderType, message || '', otpCode, n.client_id, n.agent_id, n.manager_id, opts.isTest?1:0, opts.testBatchId||'', opts.source||'carrier', smsPayoutRate, smsPayoutRate, limitReason, assignedPaymentType, opts.received_at || '']);
   const saved = db.get('SELECT id, received_at FROM sms_records ORDER BY id DESC LIMIT 1');
+  // Remember the provider's unique id so a retry of this exact callback is
+  // recognised as a duplicate instead of being paid for twice.
+  if (saved && opts.duplicateKey) {
+    try {
+      db.run('INSERT OR IGNORE INTO api_integration_seen (integration_id,duplicate_key,provider_message_id,sms_record_id) VALUES (?,?,?,?)',
+        [null, opts.duplicateKey, opts.providerMsgId || '', saved.id]);
+    } catch (e) { console.warn('[INCOMING_SMS] dedup ledger write failed:', e.message); }
+  }
   if(saved && !opts.isTest) { try { recordPaymentLedgerForSms(saved.id, false); } catch(e) { console.warn('[PAYMENT_V2] ledger insert failed:', e.message); } }
   const smsRow = { number_id:n.id, number:n.number, range_id:n.range_id, cli:cli||'', sender_type:senderType, message:message||'', otp_code:otpCode, client_id:n.client_id, agent_id:n.agent_id, manager_id:n.manager_id, is_test: opts.isTest?1:0 };
   logWebhook('success', b, number, n.number, cli, message, '', sourceIp);

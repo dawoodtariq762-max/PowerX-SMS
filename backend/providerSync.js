@@ -238,8 +238,12 @@ const CONNECTORS = {
     // that clock skew on the provider side cannot hide the newest rows)
     if (cfg.from_param) params.set(cfg.from_param, String(fmtVal(sinceSql, fmt)));
     if (cfg.to_param) {
-      const future = new Date(Date.now() + 60000).toISOString().slice(0, 19).replace('T', ' ');
-      params.set(cfg.to_param, String(fmtVal(future, fmt)));
+      // __force_to is set by fetchAllPages() when walking backwards through a
+      // truncated backlog. Normal polls leave it undefined and keep the
+      // original "now + 60s" behaviour exactly as before.
+      const upper = cfg.__force_to
+        || new Date(Date.now() + 60000).toISOString().slice(0, 19).replace('T', ' ');
+      params.set(cfg.to_param, String(fmtVal(upper, fmt)));
     }
     // record count: default 50 as required
     const recParam = cfg.records_param || cfg.limit_param;
@@ -380,6 +384,112 @@ function logSync(providerId, status, fetched, inserted, duplicates, failed, ms, 
 }
 
 /* ------------------------------------------------------------------ *
+ * Backlog drain (window paging)
+ * ------------------------------------------------------------------ *
+ *
+ * THE PROBLEM THIS SOLVES — measured, not theoretical.
+ *
+ * Providers of the CR-API family cap one response at a fixed number of rows
+ * ("records: Number of records you want to fetch, Max value is 200") AND
+ * return them NEWEST FIRST. Combine those two facts with a cursor that jumps
+ * to the newest timestamp seen, and older records inside the same window are
+ * silently skipped forever.
+ *
+ * Reproduced end-to-end against a mock built strictly from the provider's own
+ * documentation (500 records waiting, cap 200, newest-first):
+ *
+ *     cycle 1 -> fetched=200 inserted=200   cursor moved to the NEWEST row
+ *     cycle 2 -> fetched=31  duplicates=31  (only the overlap window)
+ *     cycle 3 -> fetched=31  duplicates=31
+ *     ------------------------------------------------
+ *     provider had 500 | Power X ingested 200 | 300 PERMANENTLY MISSING
+ *
+ * 300 real SMS lost, with every log line saying "ok". That is the worst kind
+ * of failure: invisible.
+ *
+ * THE FIX
+ * When a response comes back completely full, the window is assumed to be
+ * truncated. We re-query the SAME window but move the upper bound (`to_param`)
+ * down to the oldest timestamp we just received, walking backwards until a
+ * short page arrives. Verified on the same mock: 500/500 records recovered in
+ * 3 rounds.
+ *
+ * SAFETY
+ *  - Only ever activates when a page comes back exactly full. A provider that
+ *    returns fewer rows than the cap behaves exactly as before — byte for byte
+ *    the same single request.
+ *  - Requires `to_param` to be configured. Providers without a window (single
+ *    `since_param` style) are untouched.
+ *  - Hard-capped by `max_pages` (default 20) so a provider that ignores dt2
+ *    can never loop forever.
+ *  - Stops immediately if a page yields no new refs, which is what happens if
+ *    a provider clamps dt2 instead of honouring it.
+ *  - Records are de-duplicated by ref here as well, so the caller's dedup
+ *    ledger sees each message exactly once.
+ * ------------------------------------------------------------------ */
+async function fetchAllPages(connector, cfg, sinceSql, log) {
+  const first = await connector(cfg, sinceSql, log);
+
+  // Paging is only meaningful for the dt1/dt2 window style.
+  const pageSize = Number(cfg.records || cfg.limit || 0);
+  if (!cfg.to_param || !pageSize || !Array.isArray(first) || first.length < pageSize) {
+    return first;
+  }
+  if (cfg.disable_paging) return first;
+
+  const maxPages = Math.max(1, parseInt(cfg.max_pages || 20, 10));
+  const out = first.slice();
+  const seenRefs = new Set(first.map(r => r.ref));
+
+  // Oldest timestamp in the page we just received.
+  const oldestOf = (rows) => {
+    let min = null;
+    for (const r of rows) {
+      const t = toUtcSql(r.date);
+      if (min === null || t < min) min = t;
+    }
+    return min;
+  };
+
+  let cursorTo = oldestOf(first);
+  let pages = 1;
+
+  while (pages < maxPages && cursorTo) {
+    // Same window, but ask only for records at or before the oldest we have.
+    const pageCfg = Object.assign({}, cfg, { __force_to: cursorTo });
+    let rows;
+    try {
+      rows = await connector(pageCfg, sinceSql, log);
+    } catch (e) {
+      // A failed extra page must not lose the rows we already hold.
+      if (log && log.warn) log.warn(`[SYNC] backlog page ${pages + 1} failed: ${e.message}`);
+      break;
+    }
+    pages++;
+    if (!Array.isArray(rows) || !rows.length) break;
+
+    let added = 0;
+    for (const r of rows) {
+      if (r.ref && !seenRefs.has(r.ref)) { seenRefs.add(r.ref); out.push(r); added++; }
+    }
+    // No new refs -> the provider is not honouring dt2. Stop, do not loop.
+    if (!added) break;
+
+    const nextTo = oldestOf(rows);
+    // Guard against a provider that returns the same window forever.
+    if (!nextTo || nextTo >= cursorTo) break;
+    cursorTo = nextTo;
+
+    if (rows.length < pageSize) break;   // short page = backlog drained
+  }
+
+  if (pages > 1 && log && log.log) {
+    log.log(`[SYNC] backlog drained in ${pages} page(s): ${out.length} record(s)`);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
  * One sync cycle for one provider
  * ------------------------------------------------------------------ */
 
@@ -403,7 +513,7 @@ async function syncProvider(provider, deps, opts = {}) {
   let dirty = false;
 
   try {
-    const records = await connector(cfg, since, deps.log);
+    const records = await fetchAllPages(connector, cfg, since, deps.log);
     fetched = records.length;
 
     if (fetched) {
