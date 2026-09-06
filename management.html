@@ -398,6 +398,7 @@
         <div class="sub-item" data-page="limitManagement"><span class="dot"></span> Limit Management</div>
         <div class="sub-item" data-page="carrierIntegration"><span class="dot"></span> Carrier Integration</div>
         <div class="sub-item" data-page="apiProviders"><span class="dot"></span> API Providers</div>
+        <div class="sub-item" data-page="smppConnections"><span class="dot"></span> SMPP Connections</div>
         <div class="sub-item" data-page="systemLogs"><span class="dot"></span> System Logs</div>
         <div class="sub-item" data-page="backupManagement"><span class="dot"></span> Backups</div>
       </div>
@@ -772,6 +773,36 @@ Pakistan Jazz
         </div>
       </section>
 
+      <!-- ========== SYSTEM MASTER: SMPP CONNECTIONS ========== -->
+      <section class="page" id="page-smppConnections">
+        <div class="page-head"><div><h2>SMPP Connections</h2><div class="breadcrumb"><b>System Master</b> › SMPP Channel</div></div>
+          <div class="head-actions"><button class="btn btn-blue" onclick="loadSmpp()">Refresh</button><button class="btn btn-purple" onclick="openSmppModal(-1)">+ Add Connection</button></div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card dash-metric d-blue"><div class="stat-info"><p>SMPP Service</p><h3 id="smSvc">—</h3><span id="smSvcSub">Connection engine</span></div><div class="dash-go">⇄</div></div>
+          <div class="stat-card dash-metric d-green"><div class="stat-info"><p>Connected</p><h3 id="smUp">0</h3><span>Bound / listening</span></div><div class="dash-go">✓</div></div>
+          <div class="stat-card dash-metric d-orange"><div class="stat-info"><p>Total Connections</p><h3 id="smTotal">0</h3><span>Configured</span></div><div class="dash-go">#</div></div>
+          <div class="stat-card dash-metric d-pink"><div class="stat-info"><p>Errors</p><h3 id="smErrors">0</h3><span id="smErrText">Connections in error state</span></div><div class="dash-go">!</div></div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head"><div><h3>How this works</h3><div class="sub">SMPP is an additional channel. It runs alongside the HTTP callback and the API Providers sync — all three write into the same SMS records, and none of them affect the others.</div></div></div>
+          <div class="hint"><b>Client mode</b> — Power X connects out to your provider's SMPP server. You need their host, port, system&nbsp;ID and password.<br>
+          <b>Server mode</b> — Power X listens on a port and your carrier connects in. You choose the system&nbsp;ID and password and give them to the carrier, plus this server's IP and the port.<br>
+          Reconnection is automatic with backoff. Incoming messages are de-duplicated, so a redelivered message is never counted twice.</div>
+        </div>
+        <div class="table-wrap"><div class="tscroll"><table>
+          <thead><tr><th>Name</th><th>Mode</th><th>Endpoint</th><th>System ID</th><th>Status</th><th>Received</th><th>Sent</th><th>Last Activity</th><th>Actions</th></tr></thead>
+          <tbody id="smBody"></tbody>
+        </table></div><div class="table-foot"><div class="info" id="smInfo"></div></div></div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head"><div><h3>Recent SMPP Activity</h3><div class="sub">Bind, unbind, reconnect, delivery and error events.</div></div><div class="head-actions"><button class="btn btn-blue" onclick="loadSmppLogs()">Refresh Logs</button></div></div>
+          <div class="table-wrap"><div class="tscroll"><table>
+            <thead><tr><th>Time</th><th>Connection</th><th>Event</th><th>Level</th><th>Detail</th><th>Peer</th></tr></thead>
+            <tbody id="smLogBody"></tbody>
+          </table></div></div>
+        </div>
+      </section>
+
       <!-- ========== SYSTEM MASTER: SMS CLI LIMIT ========== -->
       <section class="page" id="page-cliLimit">
         <div class="page-head"><div><h2>SMS CLI Limit</h2><div class="breadcrumb"><b>System Master</b> › CLI Limit</div></div></div>
@@ -866,6 +897,80 @@ Pakistan Jazz
 </div></div>
 
 <!-- ============ API PROVIDER MODAL ============ -->
+<div class="modal-overlay" id="smppModal"><div class="modal" style="max-width:720px">
+  <div class="modal-head"><h3 id="smModalTitle">Add SMPP Connection</h3><button class="modal-close" onclick="closeModal('smppModal')">×</button></div>
+  <div class="modal-body">
+    <div class="form-grid">
+      <div class="form-group"><label>Connection Name <span class="req">*</span></label><input type="text" id="smName" placeholder="e.g. Provider-A" /></div>
+      <div class="form-group"><label>Status</label><select id="smActive"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
+    </div>
+    <div class="form-group"><label>Mode <span class="req">*</span></label>
+      <select id="smMode" onchange="smModeChange()">
+        <option value="client">Client — Power X connects out to the provider</option>
+        <option value="server">Server — the carrier connects in to Power X</option>
+      </select>
+      <div class="hint" id="smModeHint"></div>
+    </div>
+
+    <div id="smClientBox">
+      <div class="form-grid">
+        <div class="form-group"><label>Provider Host <span class="req">*</span></label><input type="text" id="smHost" placeholder="smpp.provider.com or 1.2.3.4" /></div>
+        <div class="form-group"><label>Port</label><input type="number" id="smPort" value="2775" /></div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label>Bind Type</label>
+          <select id="smBindType">
+            <option value="transceiver">Transceiver (send + receive)</option>
+            <option value="receiver">Receiver (receive only)</option>
+            <option value="transmitter">Transmitter (send only)</option>
+          </select>
+        </div>
+        <div class="form-group"><label>TLS</label><select id="smTls"><option value="0">No (plain SMPP)</option><option value="1">Yes (SMPP over TLS)</option></select></div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label>System Type</label><input type="text" id="smSystemType" placeholder="optional" /></div>
+        <div class="form-group"><label>Address Range</label><input type="text" id="smAddrRange" placeholder="optional" /></div>
+      </div>
+    </div>
+
+    <div id="smServerBox" style="display:none">
+      <div class="form-grid">
+        <div class="form-group"><label>Listen Port <span class="req">*</span></label><input type="number" id="smListenPort" placeholder="2775" /><div class="hint">Must be open in the firewall. Cannot be the web panel port.</div></div>
+        <div class="form-group"><label>Allowed IPs</label><input type="text" id="smAllowedIps" placeholder="1.2.3.4, 5.6.7.8" /><div class="hint">Comma separated. Leave empty to allow any IP.</div></div>
+      </div>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-group"><label>System ID <span class="req">*</span></label><input type="text" id="smSystemId" placeholder="username" autocomplete="off" /></div>
+      <div class="form-group"><label>Password <span class="req">*</span></label><input type="password" id="smPassword" placeholder="password" autocomplete="new-password" /><div class="hint" id="smPwHint">Stored in the database.</div></div>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-group"><label>Enquire Link (seconds)</label><input type="number" id="smEnquire" value="30" /><div class="hint">Keep-alive ping. A missed reply forces a reconnect.</div></div>
+      <div class="form-group"><label>Reconnect Delay (seconds)</label><input type="number" id="smReconnect" value="10" /><div class="hint">Grows with backoff up to the maximum below.</div></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-group"><label>Max Reconnect Delay (seconds)</label><input type="number" id="smMaxReconnect" value="300" /></div>
+      <div class="form-group"><label>Default Source Address</label><input type="text" id="smSourceAddr" placeholder="optional, used when sending" /></div>
+    </div>
+    <div class="form-group"><label>Notes</label><input type="text" id="smNotes" placeholder="optional" /></div>
+    <div class="hint" id="smTestResult" style="margin-top:6px"></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('smppModal')">Cancel</button><button class="btn btn-green" onclick="testSmpp()">Test Connection</button><button class="btn btn-purple" onclick="saveSmpp()">Save Connection</button></div>
+</div></div>
+
+<div class="modal-overlay" id="smppSendModal"><div class="modal" style="max-width:520px">
+  <div class="modal-head"><h3>Send SMS via SMPP</h3><button class="modal-close" onclick="closeModal('smppSendModal')">×</button></div>
+  <div class="modal-body">
+    <div class="form-group"><label>Connection</label><input type="text" id="smSendConnName" readonly /></div>
+    <div class="form-group"><label>Destination Number <span class="req">*</span></label><input type="text" id="smSendDest" placeholder="447700900001" /></div>
+    <div class="form-group"><label>Source Address</label><input type="text" id="smSendSrc" placeholder="leave empty to use the connection default" /></div>
+    <div class="form-group"><label>Message <span class="req">*</span></label><input type="text" id="smSendMsg" placeholder="Message text" /></div>
+    <div class="hint" id="smSendResult"></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('smppSendModal')">Cancel</button><button class="btn btn-purple" onclick="doSmppSend()">Send</button></div>
+</div></div>
+
 <div class="modal-overlay" id="apiProviderModal"><div class="modal" style="max-width:720px">
   <div class="modal-head"><h3 id="apModalTitle">Add API Provider</h3><button class="modal-close" onclick="closeModal('apiProviderModal')">×</button></div>
   <div class="modal-body">
@@ -962,7 +1067,7 @@ Pakistan Jazz
 /* auth guard — management uses admin credentials */
 if(window.API){ API.guard('admin'); }
 window.PX_PANEL_MODE='management';
-const MANAGEMENT_ALLOWED_PAGES=new Set(['import','testImport','rates','cliLimit','limitManagement','carrierIntegration','apiProviders','systemLogs','backupManagement']);
+const MANAGEMENT_ALLOWED_PAGES=new Set(['import','testImport','rates','cliLimit','limitManagement','carrierIntegration','apiProviders','smppConnections','systemLogs','backupManagement']);
 function normalizePanelPage(id){ id=String(id||'rates'); return MANAGEMENT_ALLOWED_PAGES.has(id)?id:'rates'; }
 function applyPanelSplitUi(){ /* Management Panel keeps maintenance/config modules only. */ }
 /* =============== NAV =============== */
@@ -2324,6 +2429,7 @@ async function loadAdminPageData(page){
     if(page==='limitManagement'){ await ensureAdminRates(); return loadLimitManagement(); }
     if(page==='carrierIntegration') return loadCarrierSettings();
     if(page==='apiProviders') return loadApiProviders();
+    if(page==='smppConnections') return loadSmpp();
     if(page==='systemLogs') return loadSystemLogs();
     if(page==='backupManagement') return loadBackups();
   }catch(e){console.warn('loadAdminPageData failed',page,e);}
@@ -2388,6 +2494,232 @@ async function renderSmsDetail(){
 /* Settings are stored in the database (sync_providers). The background sync
    service reads them on every cycle, so no source code or config file ever
    needs to be edited to add or change a provider. */
+/* ===================== SMPP CONNECTIONS =====================
+ * Additional channel. This block only calls /api/smpp/* endpoints and never
+ * touches the carrier-integration or API-provider screens.
+ */
+let smppData=[]; let smppStatus={}; let smEditId=-1;
+function smEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+function smStatusTag(c){
+  const st=String(c.status||'stopped');
+  const map={
+    bound:['#0ABF7E','Connected'], listening:['#2FB6FF','Listening'],
+    connecting:['#FFB020','Connecting'], reconnecting:['#FFB020','Reconnecting'],
+    error:['#FF5C7A','Error'], stopped:['#8A9099','Stopped'], disconnected:['#FF5C7A','Disconnected']
+  };
+  const [col,label]=map[st]||['#8A9099',st];
+  return `<span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;color:#fff;background:${col}">${label}</span>`;
+}
+
+async function loadSmpp(){
+  const body=document.getElementById('smBody');
+  if(!body) return;
+  try{
+    const [rows,status]=await Promise.all([
+      API.get('/smpp/connections'),
+      API.get('/smpp/status').catch(()=>({library_available:false,connections:[]}))
+    ]);
+    smppData=Array.isArray(rows)?rows:[];
+    smppStatus=status||{};
+    const sMap={}; (status.connections||[]).forEach(s=>{sMap[s.id]=s;});
+    const up=(status.connections||[]).filter(s=>s.status==='bound'||s.status==='listening').length;
+    const errs=(status.connections||[]).filter(s=>s.status==='error').length;
+
+    const svc=document.getElementById('smSvc'); const svcSub=document.getElementById('smSvcSub');
+    if(!status.library_available){ svc.textContent='Unavailable'; svcSub.textContent=status.library_error?('Library: '+status.library_error):'SMPP library not installed'; }
+    else if(status.enabled===false){ svc.textContent='Disabled'; svcSub.textContent='SMPP_ENABLED=false'; }
+    else { svc.textContent='Active'; svcSub.textContent='Connection engine running'; }
+    document.getElementById('smUp').textContent=up;
+    document.getElementById('smTotal').textContent=smppData.length;
+    document.getElementById('smErrors').textContent=errs;
+    document.getElementById('smErrText').textContent=errs?'Check the status column below':'Connections in error state';
+
+    if(!smppData.length){
+      body.innerHTML='<tr><td colspan="9" class="muted" style="text-align:center;padding:18px">No SMPP connections yet. Click “+ Add Connection” to create one.</td></tr>';
+      document.getElementById('smInfo').textContent='';
+      loadSmppLogs();
+      return;
+    }
+
+    body.innerHTML=smppData.map(c=>{
+      const st=sMap[c.id]||{};
+      const endpoint=c.mode==='server'?('listen :'+(c.listen_port||'—')):((c.host||'—')+':'+(c.port||2775));
+      const err=(st.status==='error'&&st.last_error)?`<div class="hint" style="color:var(--px-danger,#FF5C7A);margin-top:3px">${smEsc(st.last_error)}</div>`:'';
+      const q=st.queued?`<div class="hint">${st.queued} queued</div>`:'';
+      const canSend=!(c.mode==='client'&&c.bind_type==='receiver');
+      return `<tr>
+        <td><b>${smEsc(c.name)}</b>${c.notes?`<div class="hint">${smEsc(c.notes)}</div>`:''}</td>
+        <td>${c.mode==='server'?'Server (inbound)':'Client (outbound)'}<div class="hint">${smEsc(c.bind_type||'')}</div></td>
+        <td class="mono">${smEsc(endpoint)}</td>
+        <td class="mono">${smEsc(c.system_id||'—')}</td>
+        <td>${smStatusTag(st)}${err}</td>
+        <td>${st.total_received||0}</td>
+        <td>${st.total_sent||0}${q}</td>
+        <td class="muted">${st.last_activity_at?String(st.last_activity_at).slice(0,19):(st.last_connected_at?String(st.last_connected_at).slice(0,19):'Never')}</td>
+        <td>
+          <button class="btn btn-blue btn-sm" onclick="openSmppModal(${c.id})">Edit</button>
+          <button class="btn ${c.active?'btn-amber':'btn-green'} btn-sm" onclick="toggleSmpp(${c.id},${c.active?0:1})">${c.active?'Stop':'Start'}</button>
+          <button class="btn btn-green btn-sm" onclick="restartSmpp(${c.id})">Restart</button>
+          ${canSend?`<button class="btn btn-purple btn-sm" onclick="openSmppSend(${c.id})">Send</button>`:''}
+          <button class="btn btn-red btn-sm" onclick="deleteSmpp(${c.id},'${smEsc(c.name).replace(/'/g,"\\'")}')">Delete</button>
+        </td></tr>`;
+    }).join('');
+    document.getElementById('smInfo').textContent=`${smppData.length} connection(s) · ${up} connected`;
+    loadSmppLogs();
+  }catch(e){
+    body.innerHTML=`<tr><td colspan="9" class="muted" style="text-align:center;padding:18px">Could not load SMPP connections: ${smEsc(e.message||e)}</td></tr>`;
+  }
+}
+
+async function loadSmppLogs(){
+  const b=document.getElementById('smLogBody');
+  if(!b) return;
+  try{
+    const rows=await API.get('/smpp/logs');
+    if(!rows.length){ b.innerHTML='<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">No activity yet.</td></tr>'; return; }
+    const col={error:'#FF5C7A',warn:'#FFB020',info:'#0ABF7E'};
+    b.innerHTML=rows.slice(0,40).map(r=>`<tr>
+      <td class="muted">${smEsc(String(r.created_at||'').slice(0,19))}</td>
+      <td>${smEsc(r.connection_name||'—')}</td>
+      <td>${smEsc(r.event||'')}</td>
+      <td><span style="color:${col[r.level]||'#8A9099'};font-weight:700">${smEsc(r.level||'')}</span></td>
+      <td>${smEsc(r.detail||'')}</td>
+      <td class="mono muted">${smEsc(r.peer||'')}</td>
+    </tr>`).join('');
+  }catch(e){ b.innerHTML=`<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">${smEsc(e.message||e)}</td></tr>`; }
+}
+
+function smModeChange(){
+  const mode=document.getElementById('smMode').value;
+  const isServer=mode==='server';
+  document.getElementById('smClientBox').style.display=isServer?'none':'';
+  document.getElementById('smServerBox').style.display=isServer?'':'none';
+  document.getElementById('smModeHint').textContent=isServer
+    ? 'Power X opens a port and waits. Give the carrier this server IP, the listen port, and the System ID / Password you set below.'
+    : 'Power X connects out to the provider. Enter the host, port, System ID and Password they gave you.';
+}
+
+function openSmppModal(id){
+  smEditId=id;
+  const isNew=(id<0);
+  const c=isNew?null:smppData.find(x=>x.id===id);
+  const g=i=>document.getElementById(i);
+  g('smModalTitle').textContent=isNew?'Add SMPP Connection':'Edit SMPP Connection';
+  g('smName').value=c?c.name:'';
+  g('smActive').value=c?(c.active?'1':'0'):'1';
+  g('smMode').value=c?c.mode:'client';
+  g('smHost').value=c?(c.host||''):'';
+  g('smPort').value=c?(c.port||2775):2775;
+  g('smBindType').value=c?(c.bind_type||'transceiver'):'transceiver';
+  g('smTls').value=c?(c.use_tls?'1':'0'):'0';
+  g('smSystemType').value=c?(c.system_type||''):'';
+  g('smAddrRange').value=c?(c.address_range||''):'';
+  g('smListenPort').value=c?(c.listen_port||''):'';
+  g('smAllowedIps').value=c?(c.allowed_ips||''):'';
+  g('smSystemId').value=c?(c.system_id||''):'';
+  g('smPassword').value='';
+  g('smPwHint').textContent=(c&&c.has_password)?'A password is already stored. Leave blank to keep it, or type a new one to replace it.':'Stored in the database.';
+  g('smEnquire').value=c?(c.enquire_link_seconds||30):30;
+  g('smReconnect').value=c?(c.reconnect_seconds||10):10;
+  g('smMaxReconnect').value=c?(c.max_reconnect_seconds||300):300;
+  g('smSourceAddr').value=c?(c.default_source_addr||''):'';
+  g('smNotes').value=c?(c.notes||''):'';
+  g('smTestResult').textContent='';
+  smModeChange();
+  document.getElementById('smppModal').classList.add('show');
+}
+
+function smBuildPayload(){
+  const v=i=>(document.getElementById(i)?.value||'').trim();
+  const name=v('smName'); const mode=v('smMode');
+  if(!name){ alert('❌ Connection name is required.'); return null; }
+  if(mode==='client'&&!v('smHost')){ alert('❌ Provider host is required for client mode.'); return null; }
+  if(mode==='server'&&!v('smListenPort')){ alert('❌ Listen port is required for server mode.'); return null; }
+  if(!v('smSystemId')){ alert('❌ System ID is required.'); return null; }
+  if(smEditId<0&&!v('smPassword')){ alert('❌ Password is required.'); return null; }
+  const p={
+    name, mode,
+    active:v('smActive')==='1'?1:0,
+    system_id:v('smSystemId'),
+    enquire_link_seconds:parseInt(v('smEnquire')||'30',10),
+    reconnect_seconds:parseInt(v('smReconnect')||'10',10),
+    max_reconnect_seconds:parseInt(v('smMaxReconnect')||'300',10),
+    default_source_addr:v('smSourceAddr'),
+    notes:v('smNotes'),
+  };
+  if(v('smPassword')) p.password=v('smPassword');
+  if(mode==='client'){
+    p.host=v('smHost'); p.port=parseInt(v('smPort')||'2775',10);
+    p.bind_type=v('smBindType'); p.use_tls=v('smTls')==='1'?1:0;
+    p.system_type=v('smSystemType'); p.address_range=v('smAddrRange');
+  }else{
+    p.listen_port=parseInt(v('smListenPort'),10); p.allowed_ips=v('smAllowedIps');
+  }
+  return p;
+}
+
+async function saveSmpp(){
+  const p=smBuildPayload(); if(!p) return;
+  try{
+    if(smEditId<0) await API.post('/smpp/connections',p);
+    else await API.put('/smpp/connections/'+smEditId,p);
+    closeModal('smppModal');
+    setTimeout(loadSmpp,600);
+  }catch(e){ alert('❌ '+(e.message||e)); }
+}
+
+async function testSmpp(){
+  const el=document.getElementById('smTestResult');
+  if(smEditId<0){ el.textContent='Save the connection first, then test it.'; return; }
+  el.textContent='Testing…';
+  try{
+    const r=await API.post('/smpp/connections/'+smEditId+'/test',{});
+    el.innerHTML=r.ok
+      ? `<span style="color:#0ABF7E;font-weight:700">✓ ${smEsc(r.message||r.note||'Reachable')}</span>`
+      : `<span style="color:#FF5C7A;font-weight:700">✗ ${smEsc(r.error||r.note||'Failed')}</span>`;
+  }catch(e){ el.innerHTML=`<span style="color:#FF5C7A;font-weight:700">✗ ${smEsc(e.message||e)}</span>`; }
+}
+
+async function toggleSmpp(id,on){
+  try{ await API.post('/smpp/connections/'+id+(on?'/start':'/stop'),{}); setTimeout(loadSmpp,800); }
+  catch(e){ alert('❌ '+(e.message||e)); }
+}
+async function restartSmpp(id){
+  try{ await API.post('/smpp/connections/'+id+'/restart',{}); setTimeout(loadSmpp,1200); }
+  catch(e){ alert('❌ '+(e.message||e)); }
+}
+async function deleteSmpp(id,name){
+  if(!confirm('Delete SMPP connection "'+name+'"?\n\nThe link will be closed. Received SMS records are NOT deleted.')) return;
+  try{ await API.del('/smpp/connections/'+id); loadSmpp(); }
+  catch(e){ alert('❌ '+(e.message||e)); }
+}
+
+let smSendId=-1;
+function openSmppSend(id){
+  const c=smppData.find(x=>x.id===id); if(!c) return;
+  smSendId=id;
+  document.getElementById('smSendConnName').value=c.name;
+  document.getElementById('smSendDest').value='';
+  document.getElementById('smSendSrc').value='';
+  document.getElementById('smSendMsg').value='';
+  document.getElementById('smSendResult').textContent='';
+  document.getElementById('smppSendModal').classList.add('show');
+}
+async function doSmppSend(){
+  const el=document.getElementById('smSendResult');
+  const dest=(document.getElementById('smSendDest').value||'').trim();
+  const msg=(document.getElementById('smSendMsg').value||'').trim();
+  const src=(document.getElementById('smSendSrc').value||'').trim();
+  if(!dest||!msg){ el.innerHTML='<span style="color:#FF5C7A">Destination and message are required.</span>'; return; }
+  el.textContent='Sending…';
+  try{
+    const r=await API.post('/smpp/connections/'+smSendId+'/send',{destination:dest,message:msg,source_addr:src});
+    el.innerHTML=`<span style="color:#0ABF7E;font-weight:700">✓ Queued (id ${r.id}). It is sent as soon as the link is bound.</span>`;
+    setTimeout(loadSmpp,1500);
+  }catch(e){ el.innerHTML=`<span style="color:#FF5C7A;font-weight:700">✗ ${smEsc(e.message||e)}</span>`; }
+}
+
 let apiProvidersData=[];
 const AP_MASK='********';
 

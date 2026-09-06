@@ -16,6 +16,7 @@ const { seed } = require('./seed');
 const { sign, authRequired, requireRole, descendantIds } = require('./auth');
 const backup = require('./backup');
 const providerSync = require('./providerSync');
+const smppService = require('./smppService');
 
 const app = express();
 app.set('trust proxy', true);
@@ -262,6 +263,203 @@ app.get('/api/sync/status', authRequired, requireRole('admin'), (req, res) => {
       seen_count: (db.get('SELECT COUNT(*) c FROM sync_seen WHERE provider_id=?', [p.id]) || {}).c || 0,
     })),
   });
+});
+
+/* ============ SMPP CONNECTIONS (additional channel) ============
+ * Admin-only management of SMPP links. This block is entirely separate from
+ * the HTTP carrier webhook (/api/incoming-sms) and the HTTP provider pull
+ * (/api/sync/*). Neither of those reads anything written here.
+ */
+const SMPP_EDITABLE = [
+  'name','mode','active','host','port','system_id','password','system_type','bind_type',
+  'address_range','use_tls','listen_port','allowed_ips','enquire_link_seconds',
+  'reconnect_seconds','max_reconnect_seconds','connect_timeout_ms','default_source_addr','notes',
+];
+
+function smppSanitize(body, forUpdate) {
+  const out = {};
+  for (const k of SMPP_EDITABLE) {
+    if (body[k] === undefined) continue;
+    let v = body[k];
+    if (['active','use_tls'].includes(k)) v = (v === true || v === 1 || v === '1' || v === 'true') ? 1 : 0;
+    else if (['port','listen_port','enquire_link_seconds','reconnect_seconds','max_reconnect_seconds','connect_timeout_ms'].includes(k)) {
+      v = parseInt(v, 10); if (isNaN(v)) continue;
+    } else v = String(v == null ? '' : v).trim();
+    out[k] = v;
+  }
+  if (out.mode && !['client','server'].includes(out.mode)) return { error: "mode must be 'client' or 'server'" };
+  if (out.bind_type && !['transceiver','receiver','transmitter'].includes(out.bind_type)) return { error: 'invalid bind_type' };
+  if (!forUpdate) {
+    if (!out.name) return { error: 'name is required' };
+    if (!out.mode) out.mode = 'client';
+  }
+  if (out.mode === 'client' && !forUpdate && !out.host) return { error: 'host is required for client mode' };
+  if (out.mode === 'server' && !forUpdate && !out.listen_port) return { error: 'listen_port is required for server mode' };
+  if (out.listen_port !== undefined && out.listen_port !== 0) {
+    const appPort = parseInt(process.env.PORT || '4000', 10);
+    if (out.listen_port === appPort) return { error: `listen_port ${appPort} is already used by the web panel` };
+    if (out.listen_port < 1 || out.listen_port > 65535) return { error: 'listen_port must be 1-65535' };
+  }
+  return { fields: out };
+}
+
+// Never send the SMPP password back to the browser.
+function smppPublic(row) {
+  if (!row) return row;
+  const { password, ...rest } = row;
+  return { ...rest, has_password: !!password };
+}
+
+app.get('/api/smpp/connections', authRequired, requireRole('admin'), (req, res) => {
+  res.json(smppService.listConnections().map(smppPublic));
+});
+
+app.post('/api/smpp/connections', authRequired, requireRole('admin'), (req, res) => {
+  const s = smppSanitize(req.body || {}, false);
+  if (s.error) return res.status(400).json({ error: s.error });
+  const f = s.fields;
+  if (db.get('SELECT id FROM smpp_connections WHERE name=? COLLATE NOCASE', [f.name]))
+    return res.status(409).json({ error: 'A connection with this name already exists' });
+  const keys = Object.keys(f);
+  db.run(`INSERT INTO smpp_connections (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, keys.map(k => f[k]));
+  const row = db.get('SELECT * FROM smpp_connections WHERE name=?', [f.name]);
+  logAction(req, 'smpp_create', 'smpp_connections', { id: row.id, name: row.name, mode: row.mode });
+  if (row.active) { try { smppService.startConnection(row.id); } catch (e) { /* reported via status */ } }
+  res.json({ ok: true, connection: smppPublic(db.get('SELECT * FROM smpp_connections WHERE id=?', [row.id])) });
+});
+
+app.put('/api/smpp/connections/:id', authRequired, requireRole('admin'), (req, res) => {
+  const id = +req.params.id;
+  const existing = smppService.getConnection(id);
+  if (!existing) return res.status(404).json({ error: 'Connection not found' });
+  const s = smppSanitize(req.body || {}, true);
+  if (s.error) return res.status(400).json({ error: s.error });
+  const f = s.fields;
+  // An empty password field means "keep the stored one" so the operator can
+  // edit other settings without re-typing the credential.
+  if (f.password === '') delete f.password;
+  if (f.name && f.name.toLowerCase() !== String(existing.name).toLowerCase()
+      && db.get('SELECT id FROM smpp_connections WHERE name=? COLLATE NOCASE', [f.name]))
+    return res.status(409).json({ error: 'A connection with this name already exists' });
+  const keys = Object.keys(f);
+  if (keys.length) {
+    db.run(`UPDATE smpp_connections SET ${keys.map(k => `${k}=?`).join(',')}, updated_at=datetime('now') WHERE id=?`, [...keys.map(k => f[k]), id]);
+  }
+  logAction(req, 'smpp_update', 'smpp_connections', { id, fields: keys.filter(k => k !== 'password') });
+  const after = smppService.getConnection(id);
+  try {
+    if (after.active) smppService.restartConnection(id);   // apply new settings immediately
+    else smppService.stopConnection(id);
+  } catch (e) { /* reported via status */ }
+  res.json({ ok: true, connection: smppPublic(smppService.getConnection(id)) });
+});
+
+app.delete('/api/smpp/connections/:id', authRequired, requireRole('admin'), (req, res) => {
+  const id = +req.params.id;
+  const row = smppService.getConnection(id);
+  if (!row) return res.status(404).json({ error: 'Connection not found' });
+  try { smppService.stopConnection(id); } catch (_) {}
+  db.run('DELETE FROM smpp_connections WHERE id=?', [id]);
+  db.run('DELETE FROM smpp_seen WHERE connection_id=?', [id]);
+  db.run('DELETE FROM smpp_outbox WHERE connection_id=?', [id]);
+  logAction(req, 'smpp_delete', 'smpp_connections', { id, name: row.name });
+  res.json({ ok: true });
+});
+
+app.post('/api/smpp/connections/:id/start', authRequired, requireRole('admin'), (req, res) => {
+  const id = +req.params.id;
+  if (!smppService.getConnection(id)) return res.status(404).json({ error: 'Connection not found' });
+  db.run('UPDATE smpp_connections SET active=1 WHERE id=?', [id]);
+  let r; try { r = smppService.startConnection(id); } catch (e) { r = { ok: false, error: e.message }; }
+  logAction(req, 'smpp_start', 'smpp_connections', { id });
+  res.json({ ...r, status: smppService.statusOf(id) });
+});
+
+app.post('/api/smpp/connections/:id/stop', authRequired, requireRole('admin'), (req, res) => {
+  const id = +req.params.id;
+  if (!smppService.getConnection(id)) return res.status(404).json({ error: 'Connection not found' });
+  db.run('UPDATE smpp_connections SET active=0 WHERE id=?', [id]);
+  let r; try { r = smppService.stopConnection(id); } catch (e) { r = { ok: false, error: e.message }; }
+  logAction(req, 'smpp_stop', 'smpp_connections', { id });
+  res.json({ ...r, status: smppService.statusOf(id) });
+});
+
+app.post('/api/smpp/connections/:id/restart', authRequired, requireRole('admin'), (req, res) => {
+  const id = +req.params.id;
+  if (!smppService.getConnection(id)) return res.status(404).json({ error: 'Connection not found' });
+  let r; try { r = smppService.restartConnection(id); } catch (e) { r = { ok: false, error: e.message }; }
+  logAction(req, 'smpp_restart', 'smpp_connections', { id });
+  res.json({ ...r, status: smppService.statusOf(id) });
+});
+
+// Connectivity probe: does the host/port answer at all? Runs before a bind so
+// the operator can tell "wrong address" apart from "wrong credentials".
+app.post('/api/smpp/connections/:id/test', authRequired, requireRole('admin'), async (req, res) => {
+  const conn = smppService.getConnection(+req.params.id);
+  if (!conn) return res.status(404).json({ error: 'Connection not found' });
+  if (!smppService.isLibraryAvailable())
+    return res.json({ ok: false, error: 'SMPP library not installed: ' + smppService.libraryError() });
+  if (String(conn.mode) === 'server') {
+    const st = smppService.statusOf(conn.id);
+    return res.json({ ok: st.status === 'listening' || st.status === 'bound', mode: 'server', status: st.status,
+      note: st.status === 'listening' ? `Listening on port ${conn.listen_port}. Waiting for the carrier to bind.` : (conn.last_error || 'Not listening — start the connection first.') });
+  }
+  const net = require('net');
+  const started = Date.now();
+  const result = await new Promise((resolve) => {
+    const sock = new net.Socket();
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; try { sock.destroy(); } catch (_) {} resolve(r); };
+    sock.setTimeout(Math.min(15000, Math.max(1000, conn.connect_timeout_ms || 15000)));
+    sock.on('connect', () => finish({ ok: true, message: `TCP reachable in ${Date.now() - started} ms` }));
+    sock.on('timeout', () => finish({ ok: false, error: 'connection timed out — check host/port and firewall' }));
+    sock.on('error', (e) => finish({ ok: false, error: e.code === 'ECONNREFUSED' ? 'connection refused — nothing is listening on that port' : e.message }));
+    try { sock.connect(conn.port || 2775, conn.host); } catch (e) { finish({ ok: false, error: e.message }); }
+  });
+  res.json({ ...result, mode: 'client', host: conn.host, port: conn.port, current_status: (smppService.statusOf(conn.id) || {}).status });
+});
+
+app.get('/api/smpp/status', authRequired, requireRole('admin'), (req, res) => {
+  const conns = smppService.listConnections();
+  res.json({
+    library_available: smppService.isLibraryAvailable(),
+    library_error: smppService.libraryError(),
+    enabled: String(process.env.SMPP_ENABLED || 'true').toLowerCase() !== 'false',
+    connections: conns.map(c => smppService.statusOf(c.id)).filter(Boolean),
+  });
+});
+
+app.get('/api/smpp/logs', authRequired, requireRole('admin'), (req, res) => {
+  const cid = req.query.connection_id;
+  const rows = cid
+    ? db.all('SELECT * FROM smpp_logs WHERE connection_id=? ORDER BY id DESC LIMIT 200', [cid])
+    : db.all('SELECT * FROM smpp_logs ORDER BY id DESC LIMIT 200');
+  res.json(rows);
+});
+
+// Outbound send (submit_sm). Queued first, so nothing is lost if the link is down.
+app.post('/api/smpp/connections/:id/send', authRequired, requireRole('admin'), (req, res) => {
+  const id = +req.params.id;
+  const conn = smppService.getConnection(id);
+  if (!conn) return res.status(404).json({ error: 'Connection not found' });
+  if (String(conn.bind_type) === 'receiver' && String(conn.mode) === 'client')
+    return res.status(400).json({ error: 'This connection is bound as receiver only — it cannot send' });
+  try {
+    const { destination, message, source_addr } = req.body || {};
+    const r = smppService.queueOutbound(id, destination, message, source_addr, req.user.id);
+    logAction(req, 'smpp_send', 'smpp_outbox', { connection_id: id, destination });
+    res.json({ ...r, status: smppService.statusOf(id) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/smpp/outbox', authRequired, requireRole('admin'), (req, res) => {
+  const cid = req.query.connection_id;
+  const rows = cid
+    ? db.all('SELECT * FROM smpp_outbox WHERE connection_id=? ORDER BY id DESC LIMIT 200', [cid])
+    : db.all('SELECT * FROM smpp_outbox ORDER BY id DESC LIMIT 200');
+  res.json(rows);
 });
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'Power X SMS', time: new Date().toISOString() }));
@@ -3058,6 +3256,16 @@ const PORT = process.env.PORT || 4000;
       clearApiReadCache,
     });
   } catch (e) { console.warn('[SYNC] start failed:', e.message); }
+  // SMPP channel. Independent of the HTTP integrations above: if it cannot
+  // start (missing library, bad config, port in use) it reports the problem
+  // and the rest of the panel carries on exactly as before.
+  try {
+    smppService.start({
+      log: console,
+      processIncomingSmsPayload,
+      clearApiReadCache,
+    });
+  } catch (e) { console.warn('[SMPP] start failed:', e.message); }
   if (String(process.env.PAYMENT_LEDGER_BACKFILL_ON_STARTUP || 'false').toLowerCase() === 'true') {
     try { backfillPaymentLedger(); } catch(e) { console.warn('[PAYMENT_V2] backfill failed:', e.message); }
   } else {

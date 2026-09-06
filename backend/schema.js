@@ -390,6 +390,102 @@ function createTables() {
   )`);
 
 
+  /* ===== SMPP connections (additional channel, independent of HTTP/API) =====
+   *
+   * This is a SEPARATE channel from the HTTP callback (/api/incoming-sms) and
+   * from the HTTP provider pull (sync_providers). Nothing here is read by
+   * those two paths, and they read nothing from here, so the existing
+   * integrations keep working byte-for-byte as before.
+   *
+   * mode:
+   *   'client' = Power X binds OUT to the provider's SMPP server (ESME).
+   *   'server' = Power X LISTENS on a port and the carrier binds IN to us.
+   */
+  db.run(`CREATE TABLE IF NOT EXISTS smpp_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    mode TEXT NOT NULL DEFAULT 'client',      -- client | server
+    active INTEGER NOT NULL DEFAULT 0,
+
+    -- client mode (outbound bind to provider)
+    host TEXT DEFAULT '',
+    port INTEGER DEFAULT 2775,
+    system_id TEXT DEFAULT '',
+    password TEXT DEFAULT '',
+    system_type TEXT DEFAULT '',
+    bind_type TEXT DEFAULT 'transceiver',     -- transceiver | receiver | transmitter
+    address_range TEXT DEFAULT '',
+    use_tls INTEGER NOT NULL DEFAULT 0,
+
+    -- server mode (inbound: carrier binds to us)
+    listen_port INTEGER DEFAULT 0,
+    allowed_ips TEXT DEFAULT '',              -- comma separated; empty = any
+
+    -- tuning
+    enquire_link_seconds INTEGER NOT NULL DEFAULT 30,
+    reconnect_seconds INTEGER NOT NULL DEFAULT 10,
+    max_reconnect_seconds INTEGER NOT NULL DEFAULT 300,
+    connect_timeout_ms INTEGER NOT NULL DEFAULT 15000,
+    default_source_addr TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+
+    -- runtime state (written by the SMPP service, read by the UI)
+    status TEXT DEFAULT 'stopped',            -- stopped|connecting|bound|listening|error
+    last_error TEXT DEFAULT '',
+    last_connected_at TEXT DEFAULT '',
+    last_activity_at TEXT DEFAULT '',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    total_received INTEGER NOT NULL DEFAULT 0,
+    total_sent INTEGER NOT NULL DEFAULT 0,
+
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
+
+  // Deduplication ledger for inbound SMPP messages. Same idea as sync_seen:
+  // the UNIQUE index is what makes a redelivered PDU safe to ignore.
+  db.run(`CREATE TABLE IF NOT EXISTS smpp_seen (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id INTEGER NOT NULL,
+    dedup_key TEXT NOT NULL,
+    sms_record_id INTEGER,
+    received_at TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_smpp_seen_unique ON smpp_seen(connection_id, dedup_key)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_smpp_seen_created ON smpp_seen(created_at)`);
+
+  // Event log: bind/unbind/error/reconnect/received/sent. Kept small by the service.
+  db.run(`CREATE TABLE IF NOT EXISTS smpp_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id INTEGER,
+    connection_name TEXT DEFAULT '',
+    event TEXT DEFAULT '',                    -- bind|unbind|error|reconnect|deliver|submit|listen
+    level TEXT DEFAULT 'info',                -- info | warn | error
+    detail TEXT DEFAULT '',
+    peer TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_smpp_logs_conn ON smpp_logs(connection_id, id)`);
+
+  // Outbound queue for submit_sm. A message is only marked sent once the
+  // provider returns a submit_sm_resp, so a dropped link never loses it.
+  db.run(`CREATE TABLE IF NOT EXISTS smpp_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id INTEGER NOT NULL,
+    destination TEXT NOT NULL,
+    source_addr TEXT DEFAULT '',
+    message TEXT DEFAULT '',
+    status TEXT DEFAULT 'queued',             -- queued|sent|failed
+    provider_message_id TEXT DEFAULT '',
+    error TEXT DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now')),
+    sent_at TEXT DEFAULT ''
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_smpp_outbox_status ON smpp_outbox(status, id)`);
+
   db.run(`CREATE TABLE IF NOT EXISTS system_security (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     admin_security_code TEXT DEFAULT 'Dawood',
