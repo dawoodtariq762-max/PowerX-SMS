@@ -8,6 +8,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const os = require('os');
 try { require('dotenv').config({ path: path.join(__dirname, '..', '.env') }); require('dotenv').config({ path: path.join(__dirname, '.env') }); } catch (_) {}
 const bcrypt = require('bcryptjs');
 const db = require('./db');
@@ -16,6 +17,7 @@ const { seed } = require('./seed');
 const { sign, authRequired, requireRole, descendantIds } = require('./auth');
 const backup = require('./backup');
 const providerSync = require('./providerSync');
+const smsFts = require('./fts');
 const smppService = require('./smppService');
 
 const app = express();
@@ -44,18 +46,295 @@ app.use('/api', (req, res, next) => {
   }
   next();
 });
-function cachedJson(req, res, ttlMs, producer) {
-  if (String(req.query._nocache || '') === '1') return res.json(producer());
+
+/* =========================================================================
+ * PHASE-1: event-loop lag monitor (#41) — feeds /api/health + alerts
+ * ========================================================================= */
+const { monitorEventLoopDelay } = require('perf_hooks');
+const elMonitor = monitorEventLoopDelay({ resolution: 20 });
+elMonitor.enable();
+function eventLoopStats() {
+  try {
+    return {
+      lag_p50_ms: +(elMonitor.percentile(50) / 1e6).toFixed(1),
+      lag_p95_ms: +(elMonitor.percentile(95) / 1e6).toFixed(1),
+      lag_p99_ms: +(elMonitor.percentile(99) / 1e6).toFixed(1),
+      lag_max_ms: +(elMonitor.max / 1e6).toFixed(1),
+    };
+  } catch (_) { return {}; }
+}
+
+/* =========================================================================
+ * PHASE-1: version-key cache invalidation (#6/#12)
+ * numbers_ver bumps on every numbers write; cachedJson keys include it so a
+ * longer TTL stays correct (data freshness = immediate after writes).
+ * ========================================================================= */
+function getMetaVer(key) {
+  try { const r = db.get('SELECT value FROM meta WHERE key=?', [key]); return r ? (+r.value || 0) : 0; }
+  catch (_) { return 0; }
+}
+function bumpMetaVer(key) {
+  try {
+    db.run(`INSERT INTO meta(key,value) VALUES(?, '1')
+            ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1`, [key]);
+  } catch (_) {}
+}
+function bumpNumbersVer() { bumpMetaVer('numbers_ver'); }
+
+/* =========================================================================
+ * PHASE-1 Step 4: pre-aggregated daily SMS stats
+ * ========================================================================= */
+function ukStatDate(ts) {
+  try {
+    if (!ts) return ukTodayDateStr(0);
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(ts));
+    if (!m) return ukTodayDateStr(0);
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+    const p = ukParts(d);
+    return `${p.year}-${p.month}-${p.day}`;
+  } catch (_) { return ukTodayDateStr(0); }
+}
+/** O(1) ingest-time counter (called once per stored non-test SMS). */
+function recordSmsStats(o) {
+  try {
+    db.run(`INSERT INTO sms_daily_stats (stat_date,manager_id,agent_id,client_id,cli,sms_count,payout_sum)
+            VALUES (?,?,?,?,?,1,?)
+            ON CONFLICT(stat_date,manager_id,agent_id,client_id,cli)
+            DO UPDATE SET sms_count = sms_count + 1, payout_sum = payout_sum + excluded.payout_sum`,
+      [ukStatDate(o.ts), o.m ?? -1, o.a ?? -1, o.c ?? -1, String(o.cli || ''), Number(o.payout) || 0]);
+  } catch (e) { /* stats must never break ingest */ }
+}
+function statsScope(user) {
+  if (user.role === 'manager') return { col: 'manager_id', params: [user.id] };
+  if (user.role === 'agent')   return { col: 'agent_id',   params: [user.id] };
+  if (user.role === 'client')  return { col: 'client_id',  params: [user.id] };
+  return { col: null, params: [] };
+}
+/** Chunked one-time backfill of sms_daily_stats from sms_records history. */
+let backfillRunning = false;
+async function backfillSmsStats(user) {
+  if (backfillRunning) return { ok: false, error: 'Backfill already running', ...backfillStatus() };
+  backfillRunning = true;
+  const t0 = Date.now();
+  try {
+    const maxId = db.get('SELECT COALESCE(MAX(id),0) m FROM sms_records')?.m || 0;
+    if (!maxId) { backfillRunning = false; return { ok: true, processed: 0, message: 'no sms_records' }; }
+    let last = +(getMetaRaw('stats_backfill_max_id') || 0);
+    // fresh rebuild when starting from scratch (prevents double-count on re-run)
+    if (!last) { db.runNoSave('DELETE FROM sms_daily_stats'); setMeta('stats_backfill_max_id', '0'); }
+    for (; last < maxId;) {
+      const hi = Math.min(last + 100000, maxId);
+      db.execNoSave('BEGIN IMMEDIATE');
+      try {
+        // date-owner-cli keys SPAN chunks -> must UPSERT (add), not plain INSERT
+        db.runNoSave(`INSERT INTO sms_daily_stats (stat_date,manager_id,agent_id,client_id,cli,sms_count,payout_sum)
+          SELECT date(received_at, '${ukSqlModifier()}') AS sd, COALESCE(manager_id,-1), COALESCE(agent_id,-1), COALESCE(client_id,-1), COALESCE(cli,''),
+                 COUNT(*), COALESCE(SUM(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL)),0)
+          FROM sms_records
+          WHERE COALESCE(is_test,0)=0 AND id > ? AND id <= ?
+          GROUP BY sd, manager_id, agent_id, client_id, cli
+          ON CONFLICT(stat_date,manager_id,agent_id,client_id,cli)
+          DO UPDATE SET sms_count = sms_count + excluded.sms_count,
+                        payout_sum = payout_sum + excluded.payout_sum`, [last, hi]);
+        db.execNoSave('COMMIT');
+      } catch (e) { try { db.execNoSave('ROLLBACK'); } catch (_) {} throw e; }
+      last = hi;
+      try { setMeta('stats_backfill_max_id', String(last)); } catch (_) {}
+      setMeta('stats_backfill_progress', JSON.stringify({ processed: last, total: maxId }));
+      await new Promise(r => setImmediate(r)); // never block the event loop
+    }
+    setMeta('stats_backfill_done', '1');
+    setMeta('stats_backfill_progress', JSON.stringify({ processed: maxId, total: maxId, ms: Date.now() - t0 }));
+    try { logAction({ user }, 'backfill_sms_stats', 'system', { maxId, ms: Date.now() - t0 }); } catch (_) {}
+    return { ok: true, processed: maxId, ms: Date.now() - t0 };
+  } catch (e) {
+    console.error('[BACKFILL] failed:', e.message);
+    return { ok: false, error: e.message };
+  } finally { backfillRunning = false; }
+}
+function backfillStatus() {
+  try { return { done: getMetaVer('stats_backfill_done') === 1, progress: parseJsonSafe(getMetaRaw('stats_backfill_progress')) || null }; }
+  catch (_) { return {}; }
+}
+function getMetaRaw(key) { try { return db.get('SELECT value FROM meta WHERE key=?', [key])?.value ?? null; } catch (_) { return null; } }
+/** PHASE-2: parse a stored JSON string (server's safeJson() is a stringifier, not a parser). */
+function parseJsonSafe(v) { try { return typeof v === 'string' ? JSON.parse(v) : (v || null); } catch (_) { return null; } }
+function setMeta(key, value) { try { db.run(`INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, [key, String(value)]); } catch (_) {} }
+
+/** Store an idempotent response snapshot (7-day TTL, opportunistic purge). */
+function idempotencyStore(req, endpoint, key, response) {
+  try {
+    db.run(`INSERT INTO idempotency_keys(key,user_id,endpoint,response_json,expires_at) VALUES (?,?,?,?,?)
+            ON CONFLICT(key) DO NOTHING`,
+      [key, (req.user && req.user.id) || 0, endpoint, JSON.stringify(response),
+       new Date(Date.now() + 7 * 864e5).toISOString()]);
+    if (Math.random() < 0.02) {
+      try { db.run(`DELETE FROM idempotency_keys WHERE expires_at IS NOT NULL AND expires_at < datetime('now')`); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+/* =========================================================================
+ * PHASE-1: tiny dependency-free rate limiter (#30) — login brute-force guard
+ * ========================================================================= */
+const _rateBuckets = new Map();
+function rateLimit({ windowMs = 60000, max = 300, keyFn }) {
+  return function (req, res, next) {
+    const now = Date.now();
+    let ip = req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+    const key = keyFn ? keyFn(req) : ip;
+    const k = `${key}`;
+    let b = _rateBuckets.get(k);
+    if (!b || now > b.resetAt) { b = { count: 0, resetAt: now + windowMs }; _rateBuckets.set(k, b); }
+    b.count++;
+    if (_rateBuckets.size > 20000) { for (const [kk, bb] of _rateBuckets) if (now > bb.resetAt) _rateBuckets.delete(kk); }
+    if (b.count > max) {
+      res.setHeader('Retry-After', Math.ceil((b.resetAt - now) / 1000));
+      return res.status(429).json({ error: 'Too many requests — please slow down' });
+    }
+    next();
+  };
+}
+const loginRateLimit = rateLimit({ windowMs: 5 * 60000, max: 10, keyFn: req => `login:${req.ip || 'unknown'}` });
+// General API guard (per IP until auth attaches user; authRequired re-checks per user in auth.js).
+const apiRateLimit = rateLimit({ windowMs: 60000, max: parseInt(process.env.API_RATE_PER_MIN || '1200', 10) || 1200, keyFn: req => `api:${req.ip || 'unknown'}` });
+// Carrier ingest guard — generous by design (50–70 SMS/s sustained = 4200/min); 429 tells the carrier to retry.
+const smsIngestLimit = rateLimit({ windowMs: 60000, max: parseInt(process.env.INCOMING_SMS_RATE_PER_MIN || '12000', 10) || 12000, keyFn: req => `sms:${req.ip || 'unknown'}` });
+// Heavy number writes (allocate/unallocate/delete/import/divide) — 120/min per IP is far above any UI usage.
+const heavyWriteLimit = rateLimit({ windowMs: 60000, max: parseInt(process.env.HEAVY_WRITE_RATE_PER_MIN || '120', 10) || 120, keyFn: req => `heavy:${req.ip || 'unknown'}` });
+app.use('/api', (req, res, next) => {
+  const p = req.path;
+  if (p === '/health' || p === '/login' || p.startsWith('/incoming-sms')) return next();
+  return apiRateLimit(req, res, next);
+});
+app.use('/api/numbers', (req, res, next) => {
+  if (req.method === 'GET') return next();
+  return heavyWriteLimit(req, res, next);
+});
+
+/* =========================================================================
+ * PHASE-2: background CSV exports (worker threads — never block the API)
+ * ========================================================================= */
+const { Worker } = require('worker_threads');
+const EXPORT_DIR = process.env.EXPORT_DIR || path.join(os.homedir(), 'powerx-exports');
+const EXPORT_TTL_HOURS = parseInt(process.env.EXPORT_TTL_HOURS || '24', 10) || 24;
+const EXPORT_MAX_CONCURRENT = parseInt(process.env.EXPORT_MAX_CONCURRENT || '2', 10) || 2;
+const activeExportWorkers = new Set();
+function makeExportJobId() { return 'EXP-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 8).toUpperCase(); }
+
+function startExportJob(user, payload) {
+  if (activeExportWorkers.size >= EXPORT_MAX_CONCURRENT) return { error: 'Export already running — try again shortly', busy: true };
+  const jobId = makeExportJobId();
+  const exportFile = path.join(EXPORT_DIR, jobId + '.csv');
+  fs.mkdirSync(EXPORT_DIR, { recursive: true });
+  db.run(`INSERT INTO jobs (id,type,status,payload_json,created_by) VALUES (?,'export','running',?,?)`,
+    [jobId, JSON.stringify(payload), (user && user.id) || null]);
+  const scope = payload.type === 'sms' ? smsScopeWhere(user) : numberScopeWhere(user);
+  // scope col from "s.manager_id=?" / "n.manager_id=?" style where
+  let scopeCol = null, scopeId = null;
+  if (user.role !== 'admin') {
+    scopeCol = { manager: 'manager_id', agent: 'agent_id', client: 'client_id' }[user.role];
+    scopeId = user.id;
+  }
+  const wd = { jobId, dbFile: db.getDbFile(), exportFile, payload: { ...payload, scopeCol, scopeId } };
+  const w = new Worker(path.join(__dirname, 'exportWorker.js'), { workerData: wd });
+  activeExportWorkers.add(jobId);
+  w.on('message', (m) => {
+    try {
+      if (m.type === 'progress') db.run(`UPDATE jobs SET processed=?, progress=CASE WHEN total>0 THEN CAST(?*100/total AS INT) ELSE 0 END WHERE id=?`, [m.rows, m.rows, jobId]);
+    } catch (_) {}
+  });
+  w.on('exit', (code) => {
+    activeExportWorkers.delete(jobId);
+    try {
+      if (code === 0 && fs.existsSync(exportFile)) {
+        const st = fs.statSync(exportFile);
+        const token = crypto.randomBytes(16).toString('hex');
+        const rows = db.get(`SELECT processed FROM jobs WHERE id=?`, [jobId])?.processed || 0;
+        db.run(`UPDATE jobs SET status='done', progress=100, completed_at=datetime('now'),
+                result_json=? WHERE id=?`,
+          [JSON.stringify({ file: exportFile, bytes: st.size, rows, token, expires_at: new Date(Date.now() + EXPORT_TTL_HOURS * 3600e3).toISOString() }), jobId]);
+        console.log('[EXPORT] done', { jobId, rows, mb: +(st.size / 1048576).toFixed(1) });
+      } else {
+        db.run(`UPDATE jobs SET status='failed', error='worker exited unexpectedly', completed_at=datetime('now') WHERE id=?`, [jobId]);
+      }
+    } catch (e) { console.error('[EXPORT] finalize failed:', e.message); }
+  });
+  w.on('error', (e) => {
+    activeExportWorkers.delete(jobId);
+    try { db.run(`UPDATE jobs SET status='failed', error=?, completed_at=datetime('now') WHERE id=?`, [String(e.message || e), jobId]); } catch (_) {}
+  });
+  w.unref();
+  return { job_id: jobId };
+}
+
+app.post('/api/exports', authRequired, requireRole('admin', 'manager', 'agent'), (req, res) => {
+  const b = req.body || {};
+  const type = b.type === 'sms' ? 'sms' : 'numbers';
+  const payload = {
+    type,
+    search: String(b.search || '').slice(0, 30) || '',
+    range: String(b.range || '').slice(0, 80) || '',
+    allocation: ['unallocated', 'allocated'].includes(b.allocation) ? b.allocation : '',
+    from: /^\d{4}-\d{2}-\d{2}/.test(String(b.from || '')) ? String(b.from).slice(0, 10) + ' 00:00:00' : '',
+    to: /^\d{4}-\d{2}-\d{2}/.test(String(b.to || '')) ? String(b.to).slice(0, 10) + ' 23:59:59' : '',
+  };
+  const r = startExportJob(req.user, payload);
+  if (r.error) return res.status(429).json(r);
+  logAction(req, 'start_export', 'exports', { jobId: r.job_id, type });
+  res.json({ ok: true, ...r });
+});
+
+app.get('/api/jobs', authRequired, (req, res) => {
+  const all = req.user.role === 'admin' && truthy(req.query.all);
+  const rows = db.all(`SELECT id,type,status,progress,processed,total,error,created_at,completed_at FROM jobs
+    ${all ? '' : 'WHERE created_by=?'} ORDER BY created_at DESC LIMIT 100`, all ? [] : [req.user.id]);
+  res.json({ rows });
+});
+
+app.get('/api/jobs/:id', authRequired, (req, res) => {
+  const job = db.get('SELECT * FROM jobs WHERE id=?', [req.params.id]);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (req.user.role !== 'admin' && job.created_by !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+  if (job.result_json) job.result = parseJsonSafe(job.result_json);
+  res.json(job);
+});
+
+app.get('/api/exports/:id/download', (req, res) => {
+  const job = db.get(`SELECT * FROM jobs WHERE id=? AND type='export'`, [req.params.id]);
+  if (!job || job.status !== 'done' || !job.result_json) return res.status(404).json({ error: 'Export not found or not ready' });
+  // token check happens without auth header (browser download); token = capability URL
+  if (String(req.query.token || '') !== String(parseJsonSafe(job.result_json)?.token || '')) return res.status(403).json({ error: 'Invalid download token' });
+  const file = parseJsonSafe(job.result_json)?.file;
+  if (!file || !fs.existsSync(file)) return res.status(410).json({ error: 'Export file expired' });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="powerx-${job.payload_json.includes('sms') ? 'sms' : 'numbers'}-${job.id}.csv"`);
+  fs.createReadStream(file).pipe(res);
+});
+
+function cleanupExports() {
+  try {
+    const cutoff = new Date(Date.now() - EXPORT_TTL_HOURS * 3600e3).toISOString();
+    const stale = db.all(`SELECT id, result_json FROM jobs WHERE type='export' AND status='done' AND completed_at IS NOT NULL AND completed_at < datetime('now','-${EXPORT_TTL_HOURS} hours')`);
+    for (const j of stale) { const f = parseJsonSafe(j.result_json)?.file; if (f) { try { fs.unlinkSync(f); } catch (_) {} } }
+    db.run(`DELETE FROM jobs WHERE type='export' AND completed_at IS NOT NULL AND completed_at < datetime('now','-7 days')`);
+  } catch (_) {}
+}
+
+function cachedJson(req, res, ttlMs, producer, verKey) {
+  // _nocache bypass is Admin-only (prevents cache-busting abuse by regular users).
+  if (String(req.query._nocache || '') === '1' && req.user && req.user.role === 'admin') return res.json(producer());
   const uid = req.user ? `${req.user.id}:${req.user.role}` : 'anon';
-  const key = `${uid}:${req.originalUrl}`;
+  const ver = verKey ? getMetaVer(verKey) : '';
+  const key = verKey ? `${uid}:v${ver}:${req.originalUrl}` : `${uid}:${req.originalUrl}`;
   const now = Date.now();
   const hit = apiReadCache.get(key);
   if (hit && hit.expires > now) return res.json(hit.value);
   const value = producer();
   apiReadCache.set(key, { value, expires: now + Math.max(250, ttlMs || 1000) });
-  if (apiReadCache.size > 400) {
+  if (apiReadCache.size > 2000) {
     const cutoff = Date.now();
-    for (const [k, v] of apiReadCache) if (v.expires <= cutoff || apiReadCache.size > 350) apiReadCache.delete(k);
+    for (const [k, v] of apiReadCache) if (v.expires <= cutoff || apiReadCache.size > 1800) apiReadCache.delete(k);
   }
   return res.json(value);
 }
@@ -463,7 +742,88 @@ app.get('/api/smpp/outbox', authRequired, requireRole('admin'), (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'Power X SMS', time: new Date().toISOString() }));
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'Power X SMS', time: new Date().toISOString() }));
+app.get('/api/health', (req, res) => {
+  let dbSize = 0, walSize = 0;
+  try {
+    const st = fs.statSync(db.getDbFile()); dbSize = st.size;
+    walSize = (fs.statSync(db.getDbFile() + '-wal') || {}).size || 0;
+  } catch (_) {}
+  const mem = process.memoryUsage();
+  res.json({
+    ok: true, service: 'Power X SMS', time: new Date().toISOString(),
+    uptime_s: Math.round(process.uptime()),
+    rss_mb: +(mem.rss / 1048576).toFixed(1),
+    heap_mb: +(mem.heapUsed / 1048576).toFixed(1),
+    event_loop: eventLoopStats(),
+    slow_queries: db.slowQueryStats ? db.slowQueryStats() : null,
+    db_size_mb: +(dbSize / 1048576).toFixed(1),
+    wal_size_mb: +(walSize / 1048576).toFixed(1),
+    cache_entries: apiReadCache.size,
+    numbers_ver: getMetaVer('numbers_ver'),
+  });
+});
+app.post('/api/admin/analyze', authRequired, requireRole('admin'), (req, res) => {
+  const ok = db.runAnalyze();
+  logAction(req, 'run_analyze', 'database', { ok });
+  res.json({ ok });
+});
+// PHASE-3: FTS index status (additive, admin-only)
+app.get('/api/admin/fts-status', authRequired, requireRole('admin'), (req, res) => res.json(smsFts.status(db)));
+app.get('/api/admin/backfill-stats', authRequired, requireRole('admin'), (req, res) => res.json(backfillStatus()));
+app.post('/api/admin/backfill-stats', authRequired, requireRole('admin'), async (req, res) => {
+  if (truthy((req.body || {}).reset)) {
+    try { db.runNoSave('DELETE FROM sms_daily_stats'); } catch (_) {}
+    setMeta('stats_backfill_max_id', '0'); setMeta('stats_backfill_done', '0');
+  }
+  res.json(await backfillSmsStats(req.user));
+});
+
+/* =========================================================================
+ * PHASE-1 Step 7: retention (chunked, event-loop friendly; env-controlled)
+ *   HISTORY_RETENTION_DAYS    number_history   (default 90)
+ *   FAILED_SMS_RETENTION_DAYS failed_sms_queue  (default 7)
+ *   SMS_RETENTION_DAYS        sms_records       (default 0 = NEVER auto-delete)
+ * ========================================================================= */
+async function chunkDelete(table, whereSql, params = []) {
+  let total = 0;
+  for (;;) {
+    const info = db.runNoSave(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${whereSql} LIMIT 20000)`, params);
+    total += info.changes || 0;
+    if ((info.changes || 0) < 20000) break;
+    await new Promise(r => setImmediate(r));
+  }
+  return total;
+}
+let retentionRunning = false;
+async function runRetentionSweep() {
+  if (retentionRunning) return;
+  retentionRunning = true;
+  try {
+    const histDays = parseInt(process.env.HISTORY_RETENTION_DAYS || '90', 10) || 90;
+    const n1 = await chunkDelete('number_history', `created_at IS NOT NULL AND created_at <> '' AND created_at < datetime('now', '-${histDays} days')`);
+    const failDays = parseInt(process.env.FAILED_SMS_RETENTION_DAYS || '7', 10) || 7;
+    const n2 = await chunkDelete('failed_sms_queue', `created_at IS NOT NULL AND created_at <> '' AND created_at < datetime('now', '-${failDays} days')`);
+    const n3 = await chunkDelete('idempotency_keys', `expires_at IS NOT NULL AND expires_at < datetime('now')`);
+    let n4 = 0;
+    const smsDays = parseInt(process.env.SMS_RETENTION_DAYS || '0', 10) || 0;
+    if (smsDays > 0) n4 = await chunkDelete('sms_records', `received_at IS NOT NULL AND received_at <> '' AND received_at < datetime('now', '-${smsDays} days')`);
+    if (n1 || n2 || n3 || n4) console.log(`[RETENTION] history=${n1} failed_queue=${n2} idempotency=${n3} sms=${n4}`);
+    cleanupExports();
+  } catch (e) { console.warn('[RETENTION] sweep failed:', e.message); }
+  finally { retentionRunning = false; }
+}
+setTimeout(() => { runRetentionSweep(); }, 90 * 1000);
+setInterval(() => { runRetentionSweep(); }, 24 * 60 * 60 * 1000);
+// Auto backfill (one-time) shortly after boot so dashboards never scan sms_records.
+setTimeout(() => {
+  try {
+    if (getMetaVer('stats_backfill_done') !== 1) {
+      const c = db.get('SELECT COUNT(*) c FROM sms_records')?.c || 0;
+      if (c > 0) backfillSmsStats(null).then(r => console.log('[BACKFILL] auto:', JSON.stringify(r))).catch(() => {});
+    }
+  } catch (_) {}
+}, 8000).unref();
+if (!process.env.JWT_SECRET) console.warn('[SECURITY] JWT_SECRET env var is NOT set — using the default development secret. Set a strong JWT_SECRET in .env before going live!');
 
 /* ============ helpers ============ */
 function ukOffsetMinutes(date = new Date()) {
@@ -681,7 +1041,7 @@ function addFailedSms(payload, number='', cli='', message='', error=''){
 }
 
 /* ============ AUTH ============ */
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginRateLimit, (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username/password required' });
   const u = db.get('SELECT * FROM users WHERE username=? COLLATE NOCASE', [String(username).trim()]);
@@ -1157,7 +1517,7 @@ app.get('/api/test-numbers', authRequired, (req, res) => cachedJson(req, res, 30
   const q=String(req.query.search||'').trim();
   const range=String(req.query.range||'').trim();
   const where=['t.active=1']; const params=[];
-  if(q){where.push('(t.test_number LIKE ? OR r.name LIKE ?)'); params.push('%'+q+'%','%'+q+'%');}
+  if(q){where.push('(LOWER(t.test_number) LIKE ? OR LOWER(r.name) LIKE ?)'); params.push('%'+String(q).toLowerCase()+'%','%'+String(q).toLowerCase()+'%');}
   if(range){where.push('r.name=?'); params.push(range);}
   const base=`FROM range_test_numbers t JOIN ranges r ON r.id=t.range_id WHERE ${where.join(' AND ')}`;
   const paged=req.query.paged||req.query.page||req.query.limit;
@@ -1247,9 +1607,9 @@ app.get('/api/test-panel/sms', authRequired, requireRole('admin','manager','agen
   const params = [];
   const where = ['COALESCE(s.is_test,0)=1'];
   if (number) { where.push("REPLACE(REPLACE(REPLACE(REPLACE(s.number,'+',''),' ',''),'-',''),'_','')=?"); params.push(cleanPhone(number)); }
-  if (cli) { where.push('s.cli LIKE ?'); params.push('%' + cli + '%'); }
+  if (cli) { where.push('LOWER(s.cli) LIKE ?'); params.push('%' + String(cli).toLowerCase() + '%'); }
   if (search) {
-    where.push('(s.number LIKE ? OR s.cli LIKE ? OR s.message LIKE ? OR r.name LIKE ?)');
+    where.push('(LOWER(s.number) LIKE ? OR LOWER(s.cli) LIKE ? OR LOWER(s.message) LIKE ? OR LOWER(r.name) LIKE ?)');
     params.push('%' + search + '%', '%' + search + '%', '%' + search + '%', '%' + search + '%');
   }
   const base = `FROM sms_records s
@@ -1378,12 +1738,35 @@ function buildNumberQuery(user, q) {
   const scope = numberScope(user, 'n');
   const where = [scope.where];
   const params = [...scope.params];
+  // PHASE-1: only include the JOINs a filter actually needs.
+  // The hot path (scope/allocation/range_id filters, digit search) touches ONLY
+  // the numbers table — no ranges/users JOINs, so the planner drives from
+  // numbers indexes and COUNT stops scanning joined tables.
+  const need = { ranges: false, users: false };
+  // Clean-phone expression MUST match idx_numbers_clean_phone exactly.
+  const cleanN = `REPLACE(REPLACE(REPLACE(REPLACE(n.number,'+',''),' ',''),'-',''),'_','')`;
   if (q.search) {
-    where.push(`(n.number LIKE ? OR r.name LIKE ? OR n.prefix LIKE ? OR COALESCE(cu.username,'') LIKE ? OR COALESCE(au.username,'') LIKE ? OR COALESCE(mu.username,'') LIKE ?)`);
-    const v = `%${q.search}%`;
-    params.push(v, v, v, v, v, v);
+    const raw = String(q.search).trim();
+    // Fast path: digits-only input (99% of number searches) → indexed prefix
+    // search on number / clean_phone instead of 6-column '%..%' scan.
+    if (/^[+]?[\d][\d\s\-()]{0,24}$/.test(raw)) {
+      const digits = raw.replace(/\D+/g, '');
+      if (digits) {
+        // PHASE-1 fast path (measured @5M: 2.5 s → 1.3 ms):
+        //  - n.number LIKE 'dig%'  → prefix range SEARCH on idx_numbers_number(_unique)
+        //  - clean expr = 'dig'    → exact hit on idx_numbers_clean_phone
+        // MULTI-INDEX OR lets SQLite use both indexes.
+        where.push(`(n.number LIKE ? OR ${cleanN} = ?)`);
+        params.push(`${digits}%`, digits);
+      }
+    } else {
+      where.push(`(LOWER(n.number) LIKE ? OR LOWER(r.name) LIKE ? OR LOWER(n.prefix) LIKE ? OR LOWER(COALESCE(cu.username,'')) LIKE ? OR LOWER(COALESCE(au.username,'')) LIKE ? OR LOWER(COALESCE(mu.username,'')) LIKE ?)`);
+      const v = `%${raw.toLowerCase()}%`;
+      params.push(v, v, v, v, v, v);
+      need.ranges = true; need.users = true;
+    }
   }
-  if (q.range) { where.push('r.name=?'); params.push(q.range); }
+  if (q.range) { where.push('r.name=?'); params.push(q.range); need.ranges = true; }
   if (q.range_id) { where.push('n.range_id=?'); params.push(+q.range_id); }
   if (q.owner) {
     if (user.role === 'admin') {
@@ -1392,28 +1775,37 @@ function buildNumberQuery(user, q) {
     }
     else if (user.role === 'manager') { where.push('au.username=?'); params.push(q.owner); }
     else if (user.role === 'agent') { where.push('cu.username=?'); params.push(q.owner); }
+    need.users = true;
   }
   if (q.allocation === 'unallocated') {
-    if (user.role === 'admin') where.push('n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL');
-    else { const col = numberOwnerColumnForRole(user.role); where.push(`n.${col} IS NULL`); }
+    // unqualified: lets the planner use idx_numbers_unallocated (measured @5M: 2.1 s → 250 ms)
+    if (user.role === 'admin') where.push('manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL');
+    else { const col = numberOwnerColumnForRole(user.role); where.push(`${col} IS NULL`); }
   } else if (q.allocation === 'allocated') {
-    if (user.role === 'admin') where.push('(n.manager_id IS NOT NULL OR n.agent_id IS NOT NULL OR n.client_id IS NOT NULL)');
-    else { const col = numberOwnerColumnForRole(user.role); where.push(`n.${col} IS NOT NULL`); }
+    if (user.role === 'admin') where.push('(manager_id IS NOT NULL OR agent_id IS NOT NULL OR client_id IS NOT NULL)');
+    else { const col = numberOwnerColumnForRole(user.role); where.push(`${col} IS NOT NULL`); }
   }
-  return { where: where.join(' AND '), params };
+  return { where: where.join(' AND '), params, need };
 }
-function numberFromSql(where) {
-  return `FROM numbers n
-     LEFT JOIN ranges r ON r.id=n.range_id
-     LEFT JOIN users cu ON cu.id=n.client_id
-     LEFT JOIN users au ON au.id=n.agent_id
-     LEFT JOIN sharing_users su ON su.agent_user_id=n.agent_id
-     LEFT JOIN users mu ON mu.id=n.manager_id
-     WHERE ${where}`;
+/**
+ * PHASE-1: JOINs are conditional (need={ranges,users}).
+ * The sharing_users JOIN was REMOVED from every query — it could duplicate
+ * rows (an agent with several sharing panels multiplied listing + COUNT rows).
+ * Listing display now reads it via a LIMIT-1 scalar subquery instead.
+ */
+function numberFromSql(where, need = {}) {
+  const joins = [];
+  if (need.ranges) joins.push(`LEFT JOIN ranges r ON r.id=n.range_id`);
+  if (need.users) joins.push(`LEFT JOIN users cu ON cu.id=n.client_id`,
+                             `LEFT JOIN users au ON au.id=n.agent_id`,
+                             `LEFT JOIN users mu ON mu.id=n.manager_id`);
+  return `FROM numbers n ${joins.join(' ')} ${joins.length ? '' : ''}WHERE ${where}`;
 }
 function numberSelectSql(where, options = {}) {
   const lastSms = options.lastSms ? `,
             (SELECT MAX(s.received_at) FROM sms_records s WHERE s.number=n.number AND COALESCE(s.is_test,0)=0) AS last_sms_at` : '';
+  // Display query: LIMIT-bounded, so keeping display JOINs here is cheap.
+  // sharing_users becomes a scalar subquery (no row duplication).
   return `SELECT n.*, r.name AS range_name,
             COALESCE(
       NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),''),
@@ -1434,10 +1826,15 @@ function numberSelectSql(where, options = {}) {
       NULLIF(NULLIF(UPPER(TRIM(COALESCE(r.rate_30_45,''))),'NA'),''),
       '0') AS effective_rate,
             CASE WHEN n.manager_id IS NOT NULL THEN 'manager' WHEN n.agent_id IS NOT NULL THEN 'agent' WHEN n.client_id IS NOT NULL THEN 'client' ELSE 'unallocated' END AS owner_type,
-            cu.username AS client_name, COALESCE(su.panel_name, au.username) AS agent_name, au.username AS agent_username, su.panel_name AS sharing_panel_name, su.id AS sharing_user_id, mu.username AS manager_name${lastSms}
-     ${numberFromSql(where)}`;
+            cu.username AS client_name,
+            COALESCE((SELECT s1.panel_name FROM sharing_users s1 WHERE s1.agent_user_id=n.agent_id ORDER BY s1.id LIMIT 1), au.username) AS agent_name,
+            au.username AS agent_username,
+            (SELECT s1.panel_name FROM sharing_users s1 WHERE s1.agent_user_id=n.agent_id ORDER BY s1.id LIMIT 1) AS sharing_panel_name,
+            (SELECT s1.id FROM sharing_users s1 WHERE s1.agent_user_id=n.agent_id ORDER BY s1.id LIMIT 1) AS sharing_user_id,
+            mu.username AS manager_name${lastSms}
+     ${numberFromSql(where, { ranges: true, users: true })}`;
 }
-app.get('/api/numbers/summary', authRequired, (req, res) => cachedJson(req, res, 3000, () => {
+app.get('/api/numbers/summary', authRequired, (req, res) => cachedJson(req, res, 60000, () => {
   const scope = numberScope(req.user, 'n');
   const ownerExpr = req.user.role === 'admin'
     ? '(n.manager_id IS NOT NULL OR n.agent_id IS NOT NULL OR n.client_id IS NOT NULL)'
@@ -1456,28 +1853,35 @@ app.get('/api/numbers/summary', authRequired, (req, res) => cachedJson(req, res,
     ${having}
     ORDER BY r.name COLLATE NOCASE ASC`, scope.params);
   return rows.map(r => ({...r, total:+(r.total||0), available:+(r.available||0), allocated:+(r.allocated||0)}));
-}));
+}, 'numbers_ver'));
 
 // list numbers visible to caller (supports server-side pagination with ?paged=1)
 const NUMBER_PAGE_DEFAULT = 25;
-const NUMBER_PAGE_MAX = 100000; // allows 5,000/All views while keeping a safety ceiling
+// PHASE-1 (#31): 100,000-row pages blocked the event loop for seconds
+// (JSON.stringify + transfer). Cap is now env-tunable, default 1,000 rows;
+// Admin "All" views may use up to NUMBER_PAGE_MAX_ADMIN (default 5,000).
+const NUMBER_PAGE_MAX = Math.max(100, parseInt(process.env.NUMBER_PAGE_MAX || '1000', 10) || 1000);
+const NUMBER_PAGE_MAX_ADMIN = Math.max(NUMBER_PAGE_MAX, parseInt(process.env.NUMBER_PAGE_MAX_ADMIN || '5000', 10) || 5000);
 function parsePositiveInt(v, fallback) {
   const n = parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
-app.get('/api/numbers', authRequired, (req, res) => cachedJson(req, res, 1500, () => {
+app.get('/api/numbers', authRequired, (req, res) => cachedJson(req, res, 60000, () => {
   const query = buildNumberQuery(req.user, req.query || {});
-  const fromSql = numberFromSql(query.where);
 
-  // Fast fresh COUNT(*) after scope/search/filter; no SELECT * subquery.
-  const total = +(db.get(`SELECT COUNT(n.id) AS c ${fromSql}`, query.params)?.c || 0);
+  // PHASE-1 (#1/#6): COUNT runs on the SAME conditional-JOIN path as filters —
+  // no display JOINs. Measured [audit]: 35 s → sub-second at 30M rows; with the
+  // version-key cache below, repeat loads are ~0 ms.
+  const countFrom = numberFromSql(query.where, query.need);
+  const total = +(db.get(`SELECT COUNT(*) AS c ${countFrom}`, query.params)?.c || 0);
 
   const paged = req.query.paged || req.query.page || req.query.limit;
   if (paged) {
     const requestedLimitRaw = String(req.query.limit || NUMBER_PAGE_DEFAULT);
     const isAll = requestedLimitRaw.toLowerCase() === 'all';
-    const requestedLimit = isAll ? Math.max(1, total) : parsePositiveInt(requestedLimitRaw, NUMBER_PAGE_DEFAULT);
-    const limit = isAll ? Math.max(1, Math.min(total || 1, NUMBER_PAGE_MAX)) : Math.min(NUMBER_PAGE_MAX, Math.max(1, requestedLimit));
+    const hardCap = (isAll && req.user.role === 'admin') ? NUMBER_PAGE_MAX_ADMIN : NUMBER_PAGE_MAX;
+    const requestedLimit = isAll ? Math.max(1, Math.min(total || 1, hardCap)) : parsePositiveInt(requestedLimitRaw, NUMBER_PAGE_DEFAULT);
+    const limit = Math.min(hardCap, Math.max(1, requestedLimit));
     const totalPages = isAll ? 1 : Math.max(1, Math.ceil(total / limit));
     const requestedPage = parsePositiveInt(req.query.page || '1', 1);
     const page = Math.min(Math.max(1, requestedPage), totalPages);
@@ -1487,18 +1891,32 @@ app.get('/api/numbers', authRequired, (req, res) => cachedJson(req, res, 1500, (
     const dir = String(req.query.dir||'asc').toLowerCase()==='desc'?'DESC':'ASC';
     const withLastSms = String(req.query.last_sms || req.query.include_last_sms || '') === '1';
     const rows = db.all(`${numberSelectSql(query.where, { lastSms: withLastSms })} ORDER BY ${sortCol} ${dir}, n.id ASC LIMIT ? OFFSET ?`, [...query.params, limit, offset]);
-    return { rows, total, page, limit, totalPages, count_source: 'fast_database_count' };
+    return { rows, total, page, limit, totalPages, count_source: 'fast_database_count', capped: total > limit * totalPages && total > hardCap ? hardCap : undefined };
   }
 
   const rows = db.all(`${numberSelectSql(query.where)} ORDER BY n.number ASC`, query.params);
   return rows;
-}));
+}, 'numbers_ver'));
 
 // allocate selected numbers to a target user (one level down)
 app.post('/api/numbers/allocate', authRequired, (req, res) => {
   const { ids, target_id, payterm, payout } = req.body || {};
   if (!Array.isArray(ids) || !ids.length || !target_id)
     return res.status(400).json({ error: 'ids[] and target_id are required' });
+
+  // PHASE-1 (#45.6): idempotent retries — same Idempotency-Key returns the
+  // original response instead of double-processing.
+  const idemKey = String(req.headers['idempotency-key'] || '').slice(0, 100);
+  if (idemKey) {
+    try {
+      const prev = db.get('SELECT * FROM idempotency_keys WHERE key=?', [idemKey]);
+      if (prev) {
+        if (prev.user_id !== (req.user.id || 0) || prev.endpoint !== 'allocate')
+          return res.status(409).json({ error: 'Idempotency-Key already used for a different user/endpoint' });
+        if (prev.response_json) return res.json(JSON.parse(prev.response_json));
+      }
+    } catch (_) {}
+  }
 
   const target = db.get('SELECT * FROM users WHERE id=?', [target_id]);
   if (!target) return res.status(404).json({ error: 'Target not found' });
@@ -1509,10 +1927,6 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
   // Managers/Agents can allocate only to their direct child. Admin can allocate directly to any Manager or Agent.
   if (req.user.role !== 'admin' && target.parent_id !== req.user.id)
     return res.status(403).json({ error: 'You can only allocate to your direct child user' });
-
-  const ph = ids.map(() => '?').join(',');
-  const beforeRows = db.all(`SELECT id,number,manager_id,agent_id,client_id FROM numbers WHERE id IN (${ph})`, ids);
-  if (!beforeRows.length) return res.status(404).json({ error: 'No numbers found' });
 
   let sets = '', vals = [];
   if (target.role === 'manager') {
@@ -1536,42 +1950,141 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
   // Only Agent->Client can set/change client payout.
   if (req.user.role === 'agent' && payout !== undefined && payout !== '') { sets += ', payout=?'; vals.push(String(payout)); }
 
-  db.run(`UPDATE numbers SET ${sets} WHERE id IN (${ph})`, [...vals, ...ids]);
-  beforeRows.forEach(nr=>logNumberHistory(req,nr,'allocated','',target.username,{target_role:target.role}));
-  logAction(req,'allocate_numbers','numbers',{count:beforeRows.length,target:target.username,target_role:target.role});
-  res.json({ ok: true, count: beforeRows.length });
+  // PHASE-1 (#21–#25): transactional, guarded, chunk-free allocation.
+  //  - temp table instead of WHERE id IN (?,?,…) → SQLite 32,761 variable
+  //    limit is GONE (50k+ ids work — measured [audit] HTTP 500 before).
+  //  - caller-scope guard: you can only touch numbers inside your own tree.
+  //  - ownership guard: only unallocated numbers (or numbers already owned by
+  //    this target) are assigned — silent ownership steal is impossible.
+  //    Explicit force=true (owner of the numbers / admin) reassigns within
+  //    their own scope and is audit-logged.
+  //  - single BEGIN IMMEDIATE transaction → concurrent duplicate requests can
+  //    no longer both "succeed" (race condition [audit-confirmed] fixed).
+  const slotCol = { manager: 'manager_id', agent: 'agent_id', client: 'client_id' }[target.role];
+  const force = truthy(req.body && req.body.force) && slotCol !== undefined; // callers are never clients, but stay defensive
+  const scope = numberScope(req.user, 'n');
+  const ownGuard = force ? '1=1'
+    : `((n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL) OR n.${slotCol}=?)`;
+
+  const TEMP = 'tmp_alloc_ids';
+  let allocatedCount = 0;
+  try {
+    if (!db.inTransaction()) db.exec('BEGIN IMMEDIATE');
+    db.execNoSave(`DROP TABLE IF EXISTS ${TEMP}`);
+    db.execNoSave(`CREATE TEMP TABLE ${TEMP} (id INTEGER PRIMARY KEY)`);
+    const CHUNK = 5000;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = [...new Set(ids.slice(i, i + CHUNK).map(x => parseInt(x, 10)).filter(x => Number.isFinite(x) && x > 0))];
+      if (!chunk.length) continue;
+      db.runNoSave(`INSERT OR IGNORE INTO ${TEMP} (id) VALUES ${chunk.map(() => '(?)').join(',')}`, chunk);
+    }
+    const beforeRows = db.all(`SELECT n.id, n.number, n.manager_id, n.agent_id, n.client_id
+      FROM numbers n WHERE n.id IN (SELECT id FROM ${TEMP})`);
+    if (!beforeRows.length) {
+      db.execNoSave(`DROP TABLE IF EXISTS ${TEMP}`);
+      if (db.inTransaction()) db.exec('COMMIT');
+      return res.status(404).json({ error: 'No numbers found' });
+    }
+    const updParams = force ? [...vals, ...scope.params] : [...vals, ...scope.params, target.id];
+    const upd = db.runNoSave(
+      `UPDATE numbers AS n SET ${sets}
+       WHERE n.id IN (SELECT id FROM ${TEMP}) AND (${scope.where}) AND ${ownGuard}`,
+      updParams);
+    allocatedCount = upd.changes || 0;
+    // capture the post-state rows we actually own now (for history + response)
+    const afterRows = db.all(`SELECT n.id, n.number, n.manager_id, n.agent_id, n.client_id
+      FROM numbers n WHERE n.id IN (SELECT id FROM ${TEMP}) AND n.${slotCol}=?`, [target.id]);
+    db.execNoSave(`DROP TABLE IF EXISTS ${TEMP}`);
+    if (db.inTransaction()) db.exec('COMMIT');
+
+    const conflictRows = beforeRows.filter(r => (r.manager_id || r.agent_id || r.client_id) && r[slotCol] !== target.id);
+    // history only for rows this call actually set to the target (before-state kept)
+    try {
+      db.beginBatch();
+      for (const nr of afterRows) logNumberHistory(req, nr, 'allocated', '', target.username, { target_role: target.role, forced: force || undefined });
+    } finally { db.endBatch(); }
+
+    const response = {
+      ok: true,
+      count: allocatedCount,                    // backward-compatible field
+      requested: beforeRows.length,
+      allocated: allocatedCount,
+      skipped: Math.max(0, beforeRows.length - allocatedCount),
+      ...(force && conflictRows.length ? { reassigned: conflictRows.length } : {}),
+      ...(conflictRows.length && !force ? { conflicts_sample: conflictRows.slice(0, 10).map(r => ({ id: r.id, number: r.number })) } : {}),
+    };
+    logAction(req, 'allocate_numbers', 'numbers',
+      { count: allocatedCount, requested: beforeRows.length, skipped: response.skipped, target: target.username, target_role: target.role, ...(force ? { force: true } : {}) });
+    bumpNumbersVer();
+    if (idemKey) idempotencyStore(req, 'allocate', idemKey, response);
+    return res.json(response);
+  } catch (e) {
+    try { db.execNoSave(`DROP TABLE IF EXISTS ${TEMP}`); } catch (_) {}
+    try { if (db.inTransaction()) db.exec('ROLLBACK'); } catch (_) {}
+    console.error('[ALLOCATE] failed:', e.message);
+    return res.status(500).json({ error: 'Allocation failed: ' + e.message });
+  }
 });
 
 // unallocate selected numbers (clear the caller's ownership level downward, without changing old SMS snapshots)
 app.post('/api/numbers/unallocate', authRequired, (req, res) => {
   const { ids } = req.body || {};
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids[] required' });
-  const ph = ids.map(() => '?').join(',');
 
   let where = '', params = [];
   let updateSql = '';
   if (req.user.role === 'admin') {
-    where = `id IN (${ph})`;
-    params = ids;
-    updateSql = `UPDATE numbers SET manager_id=NULL, agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (${ph})`;
+    where = `n.id IN (SELECT id FROM tmp_unalloc_ids)`;
+    params = [];
+    updateSql = `UPDATE numbers SET manager_id=NULL, agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids)`;
   } else if (req.user.role === 'manager') {
-    where = `id IN (${ph}) AND manager_id=?`;
-    params = [...ids, req.user.id];
-    updateSql = `UPDATE numbers SET agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (${ph}) AND manager_id=?`;
+    where = `n.id IN (SELECT id FROM tmp_unalloc_ids) AND n.manager_id=?`;
+    params = [req.user.id];
+    updateSql = `UPDATE numbers SET agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids) AND manager_id=?`;
   } else if (req.user.role === 'agent') {
-    where = `id IN (${ph}) AND agent_id=?`;
-    params = [...ids, req.user.id];
-    updateSql = `UPDATE numbers SET client_id=NULL, payout='0', rate='' WHERE id IN (${ph}) AND agent_id=?`;
+    where = `n.id IN (SELECT id FROM tmp_unalloc_ids) AND n.agent_id=?`;
+    params = [req.user.id];
+    updateSql = `UPDATE numbers SET client_id=NULL, payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids) AND agent_id=?`;
   } else {
     return res.status(403).json({ error: 'Not allowed' });
   }
 
-  const beforeRows = db.all(`SELECT id,number,manager_id,agent_id,client_id FROM numbers WHERE ${where}`, params);
-  if (!beforeRows.length) return res.status(404).json({ error: 'No matching allocated numbers found' });
-  db.run(updateSql, params);
-  beforeRows.forEach(nr=>logNumberHistory(req,nr,'unallocated','','','Unallocate selected numbers'));
-  logAction(req,'unallocate_numbers','numbers',{count:beforeRows.length,role:req.user.role});
-  res.json({ ok: true, count: beforeRows.length });
+  // PHASE-1: temp table (no 32,761-variable limit) + single transaction +
+  // per-caller scope guard already built into the UPDATE conditions.
+  let count = 0;
+  try {
+    if (!db.inTransaction()) db.exec('BEGIN IMMEDIATE');
+    db.execNoSave('DROP TABLE IF EXISTS tmp_unalloc_ids');
+    db.execNoSave('CREATE TEMP TABLE tmp_unalloc_ids (id INTEGER PRIMARY KEY)');
+    const CHUNK = 5000;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = [...new Set(ids.slice(i, i + CHUNK).map(x => parseInt(x, 10)).filter(x => Number.isFinite(x) && x > 0))];
+      if (!chunk.length) continue;
+      db.runNoSave(`INSERT OR IGNORE INTO tmp_unalloc_ids (id) VALUES ${chunk.map(() => '(?)').join(',')}`, chunk);
+    }
+    const beforeRows = db.all(`SELECT n.id,n.number,n.manager_id,n.agent_id,n.client_id FROM numbers n WHERE ${where}`, params);
+    if (!beforeRows.length) {
+      db.execNoSave('DROP TABLE IF EXISTS tmp_unalloc_ids');
+      if (db.inTransaction()) db.exec('COMMIT');
+      return res.status(404).json({ error: 'No matching allocated numbers found' });
+    }
+    const upd = db.runNoSave(updateSql, params);
+    count = upd.changes || count;
+    db.execNoSave('DROP TABLE IF EXISTS tmp_unalloc_ids');
+    if (db.inTransaction()) db.exec('COMMIT');
+    try {
+      db.beginBatch();
+      for (const nr of beforeRows) logNumberHistory(req, nr, 'unallocated', '', '', 'Unallocate selected numbers');
+    } finally { db.endBatch(); }
+    logAction(req, 'unallocate_numbers', 'numbers', { count, role: req.user.role });
+    bumpNumbersVer();
+    res.json({ ok: true, count });
+  } catch (e) {
+    try { db.execNoSave('DROP TABLE IF EXISTS tmp_unalloc_ids'); } catch (_) {}
+    try { if (db.inTransaction()) db.exec('ROLLBACK'); } catch (_) {}
+    console.error('[UNALLOCATE] failed:', e.message);
+    return res.status(500).json({ error: 'Unallocate failed: ' + e.message });
+  }
 });
 
 function truthy(v) { return v === true || v === 1 || v === '1' || String(v || '').toLowerCase() === 'true' || String(v || '').toLowerCase() === 'yes'; }
@@ -1611,6 +2124,7 @@ function deleteNumbersFromRows(rows, req, action, details = {}, deleteSms = fals
   // Do not VACUUM after every delete; it rewrites the whole DB and makes small delete/range actions feel frozen.
   const vacuum = false;
   logAction(req, action, 'numbers', { ...details, count, linkedSms: smsCount, deleteSms: !!deleteSms });
+  bumpNumbersVer();
   return { deleted: count, deleted_sms: deleteSms ? smsCount : 0, preserved_sms: deleteSms ? 0 : smsCount, vacuum };
 }
 function deleteNumbersFromSelect(selectSql, params = [], req, action, details = {}, deleteSms = false) {
@@ -1782,6 +2296,7 @@ async function performSmartDivideJob(job){
     db.save(); clearApiReadCache();
     auditJobAction(user,'smart_divide_numbers_background','numbers',{total,report,payterm:smartType});
     setJob(job,{status:'done',progress:100,total,processed:total,report,completed_at:new Date().toISOString(),message:'Completed'});
+    bumpNumbersVer();
   }catch(e){
     setJob(job,{status:'failed',error:e.message||String(e),completed_at:new Date().toISOString(),message:'Failed'});
   }
@@ -1850,9 +2365,21 @@ function buildSmsPagedQuery(user, q = {}) {
   if (q.agent) { where.push('au.username=?'); params.push(String(q.agent)); }
   if (q.client) { where.push('cu.username=?'); params.push(String(q.client)); }
   if (q.search) {
-    const v = `%${String(q.search).trim()}%`;
-    where.push(`(s.number LIKE ? OR s.cli LIKE ? OR s.message LIKE ? OR COALESCE(r.name,'') LIKE ? OR COALESCE(mu.username,'') LIKE ? OR COALESCE(au.username,'') LIKE ? OR COALESCE(cu.username,'') LIKE ?)`);
-    params.push(v, v, v, v, v, v, v);
+    const term = String(q.search).trim();
+    // PHASE-3 FIX: columns are wrapped in LOWER() and case_sensitive_like=ON
+    // (Phase-1), so the param MUST be lowercased too — mixed-case params were
+    // silently matching nothing (latent bug, digits-only searches hid it).
+    const v = `%${term.toLowerCase()}%`;
+    // PHASE-3: with the FTS index ready, message matching uses the trigram
+    // index instead of a full-scan LIKE. Same 7-column OR semantics, same
+    // response shape. Without FTS (default) this is byte-identical to before.
+    if (smsFts.enabled() && smsFts.isReady() && term.length >= 3) {
+      where.push(`(LOWER(s.number) LIKE ? OR LOWER(s.cli) LIKE ? OR s.id IN (SELECT rowid FROM sms_fts WHERE sms_fts MATCH ?) OR LOWER(COALESCE(r.name,'')) LIKE ? OR LOWER(COALESCE(mu.username,'')) LIKE ? OR LOWER(COALESCE(au.username,'')) LIKE ? OR LOWER(COALESCE(cu.username,'')) LIKE ?)`);
+      params.push(v, v, smsFts.matchClause(term), v, v, v, v);
+    } else {
+      where.push(`(LOWER(s.number) LIKE ? OR LOWER(s.cli) LIKE ? OR LOWER(s.message) LIKE ? OR LOWER(COALESCE(r.name,'')) LIKE ? OR LOWER(COALESCE(mu.username,'')) LIKE ? OR LOWER(COALESCE(au.username,'')) LIKE ? OR LOWER(COALESCE(cu.username,'')) LIKE ?)`);
+      params.push(v, v, v, v, v, v, v);
+    }
   }
   const baseSql = `FROM sms_records s
     LEFT JOIN ranges r ON r.id=s.range_id
@@ -1877,6 +2404,19 @@ app.get('/api/sms/paged', authRequired, (req, res) => cachedJson(req, res, 1200,
   const sortMap = { date:'s.received_at', number:'s.number', cli:'s.cli', range:'r.name', manager:'mu.username', agent:'au.username', client:'cu.username', payout:'CAST(COALESCE(NULLIF(s.payout_amount,\'\'),\'0\') AS REAL)' };
   const sortCol = sortMap[q.sort] || 's.received_at';
   const dir = String(q.dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // PHASE-2: additive keyset mode — pass &cursor=<lastRowId> to walk deep SMS
+  // history in constant time (OFFSET on 10M+ rows is O(offset); cursor is O(1)
+  // per page). Without cursor, behaviour is unchanged (page/offset as before).
+  const cursor = parseInt(q.cursor, 10);
+  if (Number.isFinite(cursor) && cursor > 0) {
+    const cRows = db.all(`SELECT s.*, r.name AS range_name, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45,
+        n.rate AS number_rate, n.payout AS number_payout, n.payterm AS payterm, r.payment_type AS payment_type,
+        cu.username AS client_name, COALESCE(su.panel_name, au.username) AS agent_name, au.username AS agent_username, su.panel_name AS sharing_panel_name, su.id AS sharing_user_id, mu.username AS manager_name
+      ${built.baseSql} AND s.id < ?
+      ORDER BY s.id DESC LIMIT ?`, [...built.params, cursor, limit]);
+    const nextCursor = cRows.length === limit ? cRows[cRows.length - 1].id : null;
+    return { rows: attachSmsPayoutFields(cRows), total, page: 1, limit, totalPages: Math.max(1, Math.ceil(total / limit)), totalPayment, next_cursor: nextCursor, cursor_mode: true };
+  }
   const rows = db.all(`SELECT s.*, r.name AS range_name, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45,
       n.rate AS number_rate, n.payout AS number_payout, n.payterm AS payterm, r.payment_type AS payment_type,
       cu.username AS client_name, COALESCE(su.panel_name, au.username) AS agent_name, au.username AS agent_username, su.panel_name AS sharing_panel_name, su.id AS sharing_user_id, mu.username AS manager_name
@@ -1917,24 +2457,45 @@ app.get('/api/sms', authRequired, (req, res) => cachedJson(req, res, 2500, () =>
 // aggregated stats by dimension
 app.get('/api/stats/:by', authRequired, (req, res) => {
   const by = req.params.by; // client|agent|manager|range|number
-  const rows = smsRowsForScope(req.user);
-  const keyFn = {
-    client: r => r.client_name, agent: r => r.agent_name, manager: r => r.manager_name,
-    range: r => r.range_name, number: r => r.number
-  }[by];
-  const map = {};
-  rows.forEach(r => {
-    const rawKey = keyFn ? keyFn(r) : '';
-    // For user status pages, do not assign manager-only SMS to Agent/Client rows,
-    // and do not assign admin-only SMS to Manager rows.
-    if (['client','agent','manager'].includes(by) && !rawKey) return;
-    const k = rawKey || '—';
-    if (!map[k]) map[k] = { key: k, sms: 0, payment: '0' };
-    map[k].sms += 1;
-    map[k].payment = decimalAdd(map[k].payment, r.payout_amount || r.payout_rate || '0');
-  });
-  const out = Object.values(map);
-  res.json({ rows: out, totalSms: rows.length, totalPayment: sumPayout(rows) });
+  const q = req.query || {};
+  // PHASE-1 Step 4: SQL aggregation (old code pulled up to 5,000 rows into JS —
+  // stats silently WRONG beyond the cap and slow at scale). Response shape unchanged:
+  // { rows:[{key,sms,payment}], totalSms, totalPayment }
+  const userDims = { client: 'client_id', agent: 'agent_id', manager: 'manager_id' };
+  if (userDims[by]) {
+    const col = userDims[by];
+    const st = statsScope(req.user);
+    const where = [`s.${col} > 0`]; // -1 sentinel rows excluded (matches old skip-empty behaviour)
+    const params = [];
+    if (st.col && st.col !== col) { where.push(`s.${st.col}=?`); params.push(...st.params); }
+    else if (st.col === col) { where.push(`s.${st.col}=?`); params.push(...st.params); }
+    if (q.from) { where.push('s.stat_date >= date(?)'); params.push(q.from); }
+    if (q.to)   { where.push('s.stat_date <= date(?)'); params.push(q.to); }
+    const rows = db.all(`SELECT u.username AS key, SUM(s.sms_count) AS sms, SUM(s.payout_sum) AS pay
+      FROM sms_daily_stats s JOIN users u ON u.id = s.${col}
+      WHERE ${where.join(' AND ')}
+      GROUP BY s.${col}, u.username
+      ORDER BY sms DESC`, params)
+      .map(r => ({ key: r.key, sms: +(r.sms || 0), payment: normalizeDecimalString(r.pay) || '0' }));
+    const totalSms = rows.reduce((a, r) => a + (+r.sms || 0), 0);
+    const totalPayment = rows.reduce((a, r) => decimalAdd(a, r.payment || '0'), '0');
+    return res.json({ rows, totalSms, totalPayment });
+  }
+  // range / number dimensions: SQL GROUP BY directly on sms_records (scope-indexed)
+  const g = { range: { expr: "COALESCE(r.name,'—')", label: 'range_name' }, number: { expr: 's.number', label: 'number' } }[by];
+  if (!g) return res.status(400).json({ error: 'Invalid stats dimension' });
+  const built = buildSmsPagedQuery(req.user, q);
+  const dr = dateRangeWhere(q, 's');
+  const rows = db.all(`SELECT ${g.expr} AS key, COUNT(*) AS sms,
+      COALESCE(SUM(CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL)),0) AS pay
+    ${built.baseSql}
+    GROUP BY ${g.expr}
+    ORDER BY sms DESC
+    LIMIT 50000`, [...built.params, ...dr.params])
+    .map(r => ({ key: r.key, sms: +(r.sms || 0), payment: normalizeDecimalString(r.pay) || '0' }));
+  const totalSms = rows.reduce((a, r) => a + (+r.sms || 0), 0);
+  const totalPayment = rows.reduce((a, r) => decimalAdd(a, r.payment || '0'), '0');
+  return res.json({ rows, totalSms, totalPayment });
 });
 
 
@@ -1968,7 +2529,7 @@ app.get('/api/cli-search/suggestions', authRequired, requireRole('admin','manage
   const scope=cliSearchScope(req.user,'s');
   const rows=db.all(`SELECT s.cli AS cli, COUNT(*) AS count
     FROM sms_records s
-    WHERE ${scope.where} AND s.cli IS NOT NULL AND s.cli<>'' AND s.cli LIKE ?
+    WHERE ${scope.where} AND s.cli IS NOT NULL AND s.cli<>'' AND LOWER(s.cli) LIKE ?
     GROUP BY s.cli
     ORDER BY count DESC, s.cli ASC
     LIMIT 20`, [...scope.params, prefix+'%']);
@@ -2024,24 +2585,29 @@ function numberScopeWhere(user, alias = '') {
   if (user.role === 'client') return { where: `${p}client_id=?`, params: [user.id] };
   return { where: '1=1', params: [] };
 }
-app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 2500, () => {
+app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 10000, () => {
   const u = req.user;
   const smsScope = smsScopeWhere(u);
   const numScope = numberScopeWhere(u);
-  const dExpr = ukDateExpr('received_at');
-  const sDExpr = ukDateExpr('s.received_at');
-  const dtExpr = ukDateTimeExpr('received_at');
-  const normalSms = 'COALESCE(is_test,0)=0';
-  // Indexable range form of the same UK-day filters (identical results,
-  // but an index SEARCH instead of a full SCAN). See ukDayRangeSql().
-  const rToday = ukDayOffsetSql('received_at', 0);
-  const rYesterday = ukDayOffsetSql('received_at', -1);
-  const r7 = ukLastDaysSql('received_at', 7);
-  const rMonth = ukThisMonthSql('received_at');
-  const today = db.get(`SELECT COUNT(*) c FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${rToday}`, smsScope.params)?.c || 0;
-  const yesterday = db.get(`SELECT COUNT(*) c FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${rYesterday}`, smsScope.params)?.c || 0;
-  const d7 = db.get(`SELECT COUNT(*) c FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${r7}`, smsScope.params)?.c || 0;
-  const month = db.get(`SELECT COUNT(*) c FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${rMonth}`, smsScope.params)?.c || 0;
+  // PHASE-1 Step 4: counters now read the pre-aggregated sms_daily_stats table
+  // (O(rows-of-today), never a sms_records scan). Same numbers, same keys.
+  const st = statsScope(u);
+  const stWhere = st.col ? ` AND ${st.col}=?` : '';
+  const stP = st.params;
+  const dToday = ukTodayDateStr(0), dYesterday = ukTodayDateStr(-1);
+  const d7Start = ukTodayDateStr(-6);
+  const monthStart = dToday.slice(0, 7) + '-01';
+  const statSum = (extra, params = []) => db.get(
+    `SELECT COALESCE(SUM(sms_count),0) c FROM sms_daily_stats WHERE 1=1${stWhere}${extra}`, [...stP, ...params])?.c || 0;
+  const statPay = (extra, params = []) => normalizeDecimalString(db.get(
+    `SELECT COALESCE(SUM(payout_sum),0) p FROM sms_daily_stats WHERE 1=1${stWhere}${extra}`, [...stP, ...params])?.p || 0) || '0';
+  const today = statSum(` AND stat_date=?`, [dToday]);
+  const yesterday = statSum(` AND stat_date=?`, [dYesterday]);
+  const d7 = statSum(` AND stat_date BETWEEN ? AND ?`, [d7Start, dToday]);
+  const month = statSum(` AND stat_date >= ? AND stat_date <= ?`, [monthStart, dToday]);
+  const totalSmsStats = statSum('');
+  const payout7 = statPay(` AND stat_date BETWEEN ? AND ?`, [d7Start, dToday]);
+  const payoutMonth = statPay(` AND stat_date >= ? AND stat_date <= ?`, [monthStart, dToday]);
   const numbers = db.get(`SELECT COUNT(*) c FROM numbers WHERE ${numScope.where}`, numScope.params)?.c || 0;
   const managers = u.role === 'admin' ? (db.get(`SELECT COUNT(*) c FROM users WHERE role='manager'`)?.c || 0) : 0;
   let agents = 0, clients = 0;
@@ -2058,13 +2624,11 @@ app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 2500,
   } else if (u.role === 'agent') {
     clients = db.get(`SELECT COUNT(*) c FROM users WHERE role='client' AND parent_id=?`, [u.id])?.c || 0;
   }
-  const payout7 = normalizeDecimalString(db.get(`SELECT COALESCE(SUM(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL)),0) p FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${r7}`, smsScope.params)?.p || '0') || '0';
-  const payoutMonth = normalizeDecimalString(db.get(`SELECT COALESCE(SUM(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL)),0) p FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${rMonth}`, smsScope.params)?.p || '0') || '0';
   const daily7 = [];
-  for (let i = 6; i >= 0; i--) {
-    const dayStr = ukTodayDateStr(-i);
-    const r = db.get(`SELECT COUNT(*) c FROM sms_records WHERE ${smsScope.where} AND ${normalSms} AND ${ukDayRangeSql('received_at', dayStr, 1)}`, smsScope.params);
-    daily7.push({ date: dayStr, count: r?.c || 0 });
+  {
+    const rows = db.all(`SELECT stat_date, SUM(sms_count) c FROM sms_daily_stats WHERE 1=1${stWhere} AND stat_date BETWEEN ? AND ? GROUP BY stat_date`, [...stP, d7Start, dToday]);
+    const byDate = {}; rows.forEach(r => byDate[r.stat_date] = r.c || 0);
+    for (let i = 6; i >= 0; i--) { const dayStr = ukTodayDateStr(-i); daily7.push({ date: dayStr, count: byDate[dayStr] || 0 }); }
   }
   const recentRows = db.all(`SELECT s.*, r.name AS range_name, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45, n.rate AS number_rate, n.payout AS number_payout, n.payterm AS payterm, r.payment_type AS payment_type
     FROM sms_records s
@@ -2073,7 +2637,7 @@ app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 2500,
     WHERE ${smsScopeWhere(u,'s').where} AND COALESCE(s.is_test,0)=0
     ORDER BY s.received_at DESC, s.id DESC LIMIT 5`, smsScopeWhere(u,'s').params);
   const recent = attachSmsPayoutFields(recentRows).map(r=>({received_at:r.received_at,number:r.number,cli:r.cli,message:r.message,range_name:r.range_name,payout_rate:r.payout_rate}));
-  const totalSms = db.get(`SELECT COUNT(*) c FROM sms_records WHERE ${smsScope.where} AND ${normalSms}`, smsScope.params)?.c || 0;
+  const totalSms = totalSmsStats;
   const successToday = today;
   let failedToday = 0, failedTotal = 0;
   try {
@@ -2165,6 +2729,74 @@ async function processNumberImportJob(jobId, payload, user){
     db.run(`UPDATE number_import_batches SET status='failed', error=?, completed_at=datetime('now') WHERE batch_id=?`,[e.message,jobId]);
   }
 }
+// PHASE-2: streaming multipart import — large CSV/number files (up to 200 MB)
+// are parsed line-by-line on the server; browsers no longer build a giant JSON body.
+const uploadDisk = multer({ dest: os.tmpdir(), limits: { fileSize: 200 * 1024 * 1024 } });
+app.post('/api/numbers/import-file', authRequired, requireRole('admin'), heavyWriteLimit, uploadDisk.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'file required (multipart field "file")' });
+    const b = req.body || {};
+    const range_name = String(b.range_name || '').trim();
+    const range_id = b.range_id ? +b.range_id : 0;
+    if (!range_id && !range_name) { try { fs.unlinkSync(req.file.path); } catch (_) {} return res.status(400).json({ error: 'range_name required' }); }
+    const jobId = makeImportJobId();
+    const job = { job_id: jobId, status: 'queued', total: 0, processed: 0, inserted: 0, skipped: 0, progress: 0, error: '', created_at: new Date().toISOString() };
+    importJobs.set(jobId, job);
+    res.json({ ok: true, background: true, job });
+    // background stream processing
+    setImmediate(async () => {
+      const readline = require('readline');
+      const t0 = Date.now();
+      let rid = 0, inserted = 0, skipped = 0, processed = 0;
+      try {
+        rid = getOrCreateRange(b.range_id ? +b.range_id : 0, range_name, b.prefix || '', '');
+        db.run(`INSERT INTO number_import_batches (batch_id,range_id,range_name,file_name,total,status,created_by) VALUES (?,?,?,?,?,'processing',?)`,
+          [jobId, rid, range_name, b.file_name || req.file.originalname || '', 0, (req.user && req.user.id) || null]);
+        job.status = 'processing';
+        const rl = readline.createInterface({ input: fs.createReadStream(req.file.path), crlfDelay: Infinity });
+        let batch = [];
+        const flush = () => {
+          if (!batch.length) return;
+          if (!db.inTransaction()) db.execNoSave('BEGIN IMMEDIATE');
+          try {
+            for (const number of batch) {
+              processed++;
+              if (db.get('SELECT id FROM numbers WHERE number=?', [number])) { skipped++; continue; }
+              db.runNoSave(`INSERT INTO numbers (range_id,number,prefix,payterm,payout,import_batch_id,import_source,imported_by,imported_at) VALUES (?,?,?,?,?,?,?,?,datetime('now'))`,
+                [rid, number, b.prefix || '', b.payterm || 'Weekly', b.payout || '0', jobId, 'file', (req.user && req.user.id) || null]);
+              inserted++;
+            }
+            db.execNoSave('COMMIT');
+          } catch (e) { try { db.execNoSave('ROLLBACK'); } catch (_) {} throw e; }
+          batch = [];
+          job.processed = processed; job.inserted = inserted; job.skipped = skipped;
+          job.total = processed; job.progress = 0; // total unknown until stream ends
+        };
+        for await (let line of rl) {
+          line = String(line || '').trim();
+          if (!line) continue;
+          let tok = line.split(/[\t,;]/)[0].replace(/^["']+|["']+$/g, '').trim();
+          const number = normalizeNumberForImport(tok);
+          if (!number) { continue; }
+          if (batch.length >= 1000) { flush(); await new Promise(r => setImmediate(r)); }
+          batch.push(number);
+        }
+        flush();
+        job.status = 'done'; job.progress = 100; job.completed_at = new Date().toISOString();
+        db.run(`UPDATE number_import_batches SET total=?, inserted=?, skipped=?, status='done', completed_at=datetime('now') WHERE batch_id=?`,
+          [processed, inserted, skipped, jobId]);
+        logAction({ user: req.user }, 'import_numbers_file', 'numbers', { jobId, inserted, skipped, total: processed });
+        bumpNumbersVer();
+        console.log('[IMPORT-FILE] completed', { jobId, inserted, skipped, total: processed, s: ((Date.now() - t0) / 1000).toFixed(1) });
+      } catch (e) {
+        job.status = 'failed'; job.error = e.message;
+        try { db.run(`UPDATE number_import_batches SET status='failed', error=?, completed_at=datetime('now') WHERE batch_id=?`, [e.message, jobId]); } catch (_) {}
+        console.error('[IMPORT-FILE] failed:', e.message);
+      } finally { try { fs.unlinkSync(req.file.path); } catch (_) {} }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/numbers/import', authRequired, requireRole('admin'), (req, res) => {
   const { range_id, range_name, prefix, numbers, payterm, payout, file_name } = req.body || {};
   if (!Array.isArray(numbers) || numbers.length === 0) return res.status(400).json({ error: 'numbers[] required' });
@@ -2403,7 +3035,7 @@ app.delete('/api/panel-sharing/users/:id', authRequired, requireRole('admin'), (
 app.get('/api/panel-sharing/numbers', authRequired, requireRole('admin'), (req,res)=>cachedJson(req,res,1500,()=>{
   const q=String(req.query.search||'').trim(); const range=String(req.query.range||'').trim();
   const where=['n.manager_id IS NULL','n.agent_id IS NULL','n.client_id IS NULL',"COALESCE(r.deleted_at,'')=''"], params=[];
-  if(q){where.push('(n.number LIKE ? OR r.name LIKE ?)'); params.push('%'+q+'%','%'+q+'%');}
+  if(q){where.push('(LOWER(n.number) LIKE ? OR LOWER(r.name) LIKE ?)'); params.push('%'+String(q).toLowerCase()+'%','%'+String(q).toLowerCase()+'%');}
   if(range){where.push('r.name=?'); params.push(range);}
   const total=db.get(`SELECT COUNT(*) c FROM numbers n LEFT JOIN ranges r ON r.id=n.range_id WHERE ${where.join(' AND ')}`,params)?.c||0;
   const limitRaw=String(req.query.limit||25); const limit=limitRaw.toLowerCase()==='all'?Math.min(total||1,100000):Math.min(Math.max(parseInt(limitRaw)||25,1),1000);
@@ -2423,6 +3055,7 @@ app.post('/api/panel-sharing/allocate', authRequired, requireRole('admin'), (req
     db.run(`UPDATE numbers SET agent_id=?, manager_id=NULL, client_id=NULL, payout='0', rate='', payterm='weekly' WHERE id IN (${ph2})`, [su.agent_user_id,...rowIds]);
     rows.forEach(nr=>logNumberHistory(req,nr,'allocated','',su.panel_name,{target_role:'sharing_agent',sharing_user_id:su.id}));
     logAction(req,'allocate_panel_sharing_numbers','panel_sharing',{count:rows.length,panel_name:su.panel_name});
+    bumpNumbersVer();
     res.json({ok:true,count:rows.length,panel_name:su.panel_name,rows:rows.map(r=>({range_name:r.range_name||'',number:r.number||''}))});
   } finally { try{db.endBatch&&db.endBatch()}catch(e){} }
 });
@@ -2583,6 +3216,7 @@ app.post('/api/failed-sms/:id/retry', authRequired, requireRole('admin'), (req,r
     [n.id,n.number,n.range_id,f.cli||'',retrySenderType,f.message||'',retryOtpCode,n.client_id,n.agent_id,n.manager_id,retryRate,retryRate,retryPaymentType]);
   const retrySaved=db.get('SELECT id FROM sms_records ORDER BY id DESC LIMIT 1');
   if(retrySaved){ try{ recordPaymentLedgerForSms(retrySaved.id); }catch(e){ console.warn('[PAYMENT_V2] retry ledger failed:', e.message); } }
+  try { recordSmsStats({ m: n.manager_id, a: n.agent_id, c: n.client_id, cli: f.cli || '', payout: retryRate, ts: '' }); } catch (_) {}
   const smsRow={number_id:n.id,number:n.number,range_id:n.range_id,cli:f.cli||'',sender_type:retrySenderType,message:f.message||'',otp_code:retryOtpCode,client_id:n.client_id,agent_id:n.agent_id,manager_id:n.manager_id};
   db.run(`UPDATE failed_sms_queue SET status='Retried',retry_count=retry_count+1,updated_at=datetime('now') WHERE id=?`,[id]);
   logAction(req,'retry_failed_sms','failed_sms_queue',{id,number:n.number});
@@ -2839,6 +3473,7 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE(NULLIF(?,''),datetime('now')))`,
     [n.id, n.number, n.range_id, cli || '', senderType, message || '', otpCode, n.client_id, n.agent_id, n.manager_id, opts.isTest?1:0, opts.testBatchId||'', opts.source||'carrier', smsPayoutRate, smsPayoutRate, limitReason, assignedPaymentType, opts.received_at || '']);
   const saved = db.get('SELECT id, received_at FROM sms_records ORDER BY id DESC LIMIT 1');
+  if (!opts.isTest) { try { recordSmsStats({ m: n.manager_id, a: n.agent_id, c: n.client_id, cli, payout: smsPayoutRate, ts: saved?.received_at }); } catch (_) {} }
   // Remember the provider's unique id so a retry of this exact callback is
   // recognised as a duplicate instead of being paid for twice.
   if (saved && opts.duplicateKey) {
@@ -2881,13 +3516,13 @@ function handleCarrierIncoming(req, res, payload) {
 }
 
 // Carrier HTTP callback endpoint. Main production method: POST /api/incoming-sms
-app.post('/api/incoming-sms', upload.none(), (req, res) => {
+app.post('/api/incoming-sms', smsIngestLimit, upload.none(), (req, res) => {
   const payload = normalizeIncomingPayload(req);
   return handleCarrierIncoming(req, res, payload);
 });
 
 // Optional GET support for carrier/browser diagnostics and carriers that test URLs via GET.
-app.get('/api/incoming-sms', (req, res) => {
+app.get('/api/incoming-sms', smsIngestLimit, (req, res) => {
   const hasPayload = Object.keys(req.query || {}).some(k => ['number','to','To','recipient','destination','msisdn','receiver','called','message','text','body','Body','sms','content','msg'].includes(k));
   if (!hasPayload) {
     const settings = getCarrierSettings();
@@ -3247,15 +3882,32 @@ const PORT = process.env.PORT || 4000;
   await db.init();
   createTables();
   seed();
-  if (backup && backup.startAutomaticBackups) backup.startAutomaticBackups(db, console);
-  // Background provider sync: the ONLY component that talks to external APIs.
-  try {
-    providerSync.start({
-      log: console,
-      processIncomingSmsPayload,
-      clearApiReadCache,
-    });
-  } catch (e) { console.warn('[SYNC] start failed:', e.message); }
+  // PHASE-2 optional process split: POWERX_ROLE=api runs web-only (no timers);
+  // POWERX_ROLE=sync runs only timers (2nd process). Default (unset/'all') = everything.
+  const POWERX_ROLE = (process.env.POWERX_ROLE || 'all').toLowerCase();
+  // PHASE-3: optional FTS5 trigram index over SMS messages (POWERX_FTS=1).
+  // Default off = zero change. Indexes new SMS via triggers; history backfills
+  // in background; /api/sms/paged search switches to the index once ready.
+  if (smsFts.enabled() && ['all', 'api'].includes(POWERX_ROLE)) {
+    try {
+      smsFts.init(db);
+      smsFts.startBackfill(db, console);
+      console.log('• SMS FTS5 (trigram) enabled: triggers active, history backfill running');
+    } catch (e) { console.error('[FTS] init failed:', e.message); }
+  }
+  if (['all', 'sync'].includes(POWERX_ROLE)) {
+    if (backup && backup.startAutomaticBackups) backup.startAutomaticBackups(db, console);
+    // Background provider sync: the ONLY component that talks to external APIs.
+    try {
+      providerSync.start({
+        log: console,
+        processIncomingSmsPayload,
+        clearApiReadCache,
+      });
+    } catch (e) { console.warn('[SYNC] start failed:', e.message); }
+  } else {
+    console.log('• POWERX_ROLE=' + POWERX_ROLE + ': backup + provider-sync timers skipped (run a second process with POWERX_ROLE=sync)');
+  }
   // SMPP channel. Independent of the HTTP integrations above: if it cannot
   // start (missing library, bad config, port in use) it reports the problem
   // and the rest of the panel carries on exactly as before.

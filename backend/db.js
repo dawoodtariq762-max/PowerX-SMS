@@ -57,11 +57,35 @@ async function init() {
   try { db.pragma('synchronous = NORMAL'); } catch (_) {}
   // Wait instead of throwing SQLITE_BUSY if something else holds the file.
   try { db.pragma('busy_timeout = 10000'); } catch (_) {}
-  // Keep the page cache modest so RAM stays low and predictable (~64 MB max).
-  try { db.pragma('cache_size = -64000'); } catch (_) {}
+  applyPerfPragmas(db);
   try { db.pragma('foreign_keys = ON'); } catch (_) {}
 
+  // Fresh optimizer statistics on first boot only (ANALYZE can be slow on a
+  // huge database, so we never rerun it automatically here — see runAnalyze()).
+  try {
+    const hasStats = db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'");
+    if (!hasStats) { db.exec('ANALYZE'); console.log('• ANALYZE: fresh optimizer statistics created'); }
+  } catch (_) {}
+
   return db;
+}
+
+/**
+ * PHASE-1 perf pragmas (env-tunable):
+ *   SQLITE_CACHE_MB   page-cache MB (default 256; 512+ recommended on 8 GB VPS)
+ *   SQLITE_MMAP_BYTES mmap window (default 1 GB) — reads avoid memcpy for hot pages
+ *   temp_store=MEMORY sorts/temp tables stay in RAM
+ */
+function applyPerfPragmas(target) {
+  const cacheMb = Math.max(16, parseInt(process.env.SQLITE_CACHE_MB || '256', 10) || 256);
+  try { target.pragma(`cache_size = -${cacheMb * 1024}`); } catch (_) {}
+  const mmap = parseInt(process.env.SQLITE_MMAP_BYTES || '1073741824', 10);
+  if (Number.isFinite(mmap) && mmap > 0) { try { target.pragma(`mmap_size = ${mmap}`); } catch (_) {} }
+  try { target.pragma('temp_store = MEMORY'); } catch (_) {}
+  // LIKE prefix searches on BINARY-collated indexed columns need this to use
+  // the index (phone numbers have no case). Text searches in queries are
+  // wrapped in LOWER() so user-facing case-insensitivity is preserved.
+  try { target.pragma('case_sensitive_like = ON'); } catch (_) {}
 }
 
 /* ------------------------------------------------------------------ *
@@ -74,8 +98,11 @@ function inTransaction() {
 function beginBatch() {
   batchDepth++;
   // Only open a transaction if nothing else already has one open.
+  // PHASE-1: IMMEDIATE — take the write lock up-front so read-then-write
+  // upgrades can't hit SQLITE_BUSY_SNAPSHOT once a second writer process
+  // exists (Phase-2 process split).
   if (batchDepth === 1 && !inTransaction()) {
-    try { db.exec('BEGIN'); txnActive = true; } catch (_) { txnActive = false; }
+    try { db.exec('BEGIN IMMEDIATE'); txnActive = true; } catch (_) { txnActive = false; }
   }
 }
 
@@ -105,6 +132,12 @@ function endBatch() {
 function endBatchNoSave() {
   if (batchDepth > 0) batchDepth--;
   if (batchDepth === 0) commitBatch();
+}
+
+/** Re-run ANALYZE on demand (admin endpoint / post-maintenance). */
+function runAnalyze() {
+  try { db.exec('ANALYZE'); return true; }
+  catch (e) { console.warn('ANALYZE failed:', e.message); return false; }
 }
 
 /**
@@ -156,8 +189,27 @@ function normParams(params) {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * PHASE-1: slow-query detection (#40)
+ * Every run/get/all is timed; anything >= SLOW_QUERY_MS (default 200)
+ * is logged with the SQL. slowQueryStats() feeds /api/health.
+ * ------------------------------------------------------------------ */
+const SLOW_MS = Math.max(50, parseInt(process.env.SLOW_QUERY_MS || '200', 10) || 200);
+const slowStats = { count: 0, worstMs: 0, lastSql: '', thresholdMs: SLOW_MS };
+function noteSlow(sql, t0) {
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  if (ms < SLOW_MS) return;
+  slowStats.count++;
+  if (ms > slowStats.worstMs) slowStats.worstMs = Math.round(ms);
+  slowStats.lastSql = String(sql).replace(/\s+/g, ' ').slice(0, 160);
+  console.warn(`[SLOW_QUERY] ${ms.toFixed(0)}ms :: ${slowStats.lastSql}`);
+}
+function slowQueryStats() { return { ...slowStats }; }
+
 function run(sql, params = []) {
+  const t0 = process.hrtime.bigint();
   const info = prep(sql).run(...normParams(params));
+  noteSlow(sql, t0);
   return { lastInsertRowid: Number(info.lastInsertRowid), changes: info.changes };
 }
 
@@ -167,12 +219,17 @@ function runNoSave(sql, params = []) {
 }
 
 function get(sql, params = []) {
+  const t0 = process.hrtime.bigint();
   const row = prep(sql).get(...normParams(params));
+  noteSlow(sql, t0);
   return row === undefined ? null : row;
 }
 
 function all(sql, params = []) {
-  return prep(sql).all(...normParams(params));
+  const t0 = process.hrtime.bigint();
+  const rows = prep(sql).all(...normParams(params));
+  noteSlow(sql, t0);
+  return rows;
 }
 
 /**
@@ -252,10 +309,10 @@ function replaceWithFile(filePath) {
   fs.renameSync(tmp, DB_FILE);
 
   db = new Database(DB_FILE);
+  applyPerfPragmas(db);
   try { db.pragma('journal_mode = WAL'); } catch (_) {}
   try { db.pragma('synchronous = NORMAL'); } catch (_) {}
   try { db.pragma('busy_timeout = 10000'); } catch (_) {}
-  try { db.pragma('cache_size = -64000'); } catch (_) {}
   try { db.pragma('foreign_keys = ON'); } catch (_) {}
   return db;
 }
@@ -290,4 +347,5 @@ module.exports = {
   init, run, runNoSave, exec, execNoSave, get, all, save,
   beginBatch, endBatch, endBatchNoSave, vacuum,
   exportBuffer, getDbFile, replaceWithFile,
+  slowQueryStats, runAnalyze, inTransaction,
 };

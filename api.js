@@ -29,6 +29,18 @@
     return data;
   }
 
+  // PHASE-2: multipart upload helper (large CSV imports without JSON body)
+  async function upload(path, formData) {
+    const opt = { method: 'POST', body: formData };
+    const t = TOKEN();
+    if (t) opt.headers['Authorization'] = 'Bearer ' + t;
+    const r = await fetch('/api' + path, opt);
+    if (r.status === 401) { clearAuthStorage(); location.href = '/panel-login'; throw new Error('Session expired'); }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    return data;
+  }
+
   // Small client-side GET cache prevents duplicate heavy API calls during warmup + page click.
   const getCache = new Map();
   function isCacheableGet(path){
@@ -609,6 +621,7 @@
     openProfileMenu,
     paginateRows,
     waitNumberJob,
+    upload,
   };
   function initLengthSelectObserver(){
     enhancePageSizeOptions(document);

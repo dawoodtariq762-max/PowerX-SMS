@@ -55,11 +55,23 @@ function listBackups(db) {
 function createBackup(db, reason = 'manual') {
   const dir = ensureBackupDir(db);
   if (db.save) db.save();
-  const buffer = db.exportBuffer ? db.exportBuffer() : fs.readFileSync(getDbFile(db));
   const file = `nova-sms-backup-${ts()}.sqlite`;
   const fullPath = path.join(dir, file);
   const tmpPath = fullPath + '.tmp';
-  fs.writeFileSync(tmpPath, Buffer.from(buffer));
+  // PHASE-2 MEMORY FIX: exportBuffer() was the sql.js-era whole-DB-in-a-Buffer
+  // API — on a multi-GB database it allocated the entire file in RAM (1.86 GB
+  // at 5M numbers) and got the process OOM-killed. VACUUM INTO writes the
+  // same complete, restorable snapshot directly to disk with O(1) Node memory.
+  let done = false;
+  try {
+    try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (_) {}
+    db.exec(`VACUUM INTO '${tmpPath.replace(/'/g, "''")}'`);
+    done = true;
+  } catch (_) { /* fall back below */ }
+  if (!done) {
+    const buffer = db.exportBuffer ? db.exportBuffer() : fs.readFileSync(getDbFile(db));
+    fs.writeFileSync(tmpPath, Buffer.from(buffer));
+  }
   fs.renameSync(tmpPath, fullPath);
   return { file, size: fs.statSync(fullPath).size, reason, created_at: new Date().toISOString() };
 }

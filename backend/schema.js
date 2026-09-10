@@ -601,6 +601,89 @@ function createTables() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_sync_logs_provider ON sync_logs(provider_id, id)`);
 
 
+  /* =========================================================================
+   * PHASE-1 SCHEMA ADDITIONS (all additive / IF NOT EXISTS — safe on boot)
+   * ========================================================================= */
+
+  // 1) numbers.number UNIQUE — DB-level dedup (import can use INSERT OR IGNORE).
+  //    Skipped with a warning if legacy duplicate rows exist; clean them first.
+  try {
+    const dup = db.get(`SELECT number, COUNT(*) c FROM numbers GROUP BY number HAVING c > 1 LIMIT 1`);
+    if (dup) {
+      console.warn('[MIGRATION] Duplicate numbers exist — UNIQUE index NOT created. Clean duplicates first.');
+    } else {
+      db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_numbers_number_unique ON numbers(number)`);
+    }
+  } catch (e) { console.warn('[MIGRATION] numbers unique check failed:', e.message); }
+
+  // 2) number_history indexes (had ZERO indexes — full scans on listing + purge)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_nh_number_created ON number_history(number_id, created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_nh_created ON number_history(created_at)`);
+
+  // 3) SMS keyset/recent index (received_at DESC scans)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sms_received_id ON sms_records(received_at DESC, id)`);
+
+  // 4) Unallocated fast-filter (partial indexes — tiny and hot)
+  //    (range_id, number): filter+group   |   (number): ORDER BY number LIMIT → instant first pages
+  db.run(`CREATE INDEX IF NOT EXISTS idx_numbers_unallocated ON numbers(range_id, number)
+    WHERE manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_numbers_unallocated_number ON numbers(number)
+    WHERE manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL`);
+
+  // 5) Version counters for cache invalidation (numbers_ver / sms_ver / users_ver)
+  db.run(`CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`);
+
+  // 6) Idempotency keys (double-submit/retry protection for allocation etc.)
+  db.run(`CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key           TEXT PRIMARY KEY,
+    user_id       INTEGER NOT NULL,
+    endpoint      TEXT NOT NULL,
+    response_json TEXT,
+    created_at    TEXT DEFAULT (datetime('now')),
+    expires_at    TEXT
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_idem_expires ON idempotency_keys(expires_at)`);
+
+  // 7) Pre-aggregated daily SMS stats (dashboard + user-dimension reports).
+  //    One row per UK-date × owner-chain × CLI. -1 sentinel = NULL owner.
+  //    Dashboard reads this instead of scanning sms_records.
+  db.run(`CREATE TABLE IF NOT EXISTS sms_daily_stats (
+    stat_date  TEXT NOT NULL,
+    manager_id INTEGER NOT NULL DEFAULT -1,
+    agent_id   INTEGER NOT NULL DEFAULT -1,
+    client_id  INTEGER NOT NULL DEFAULT -1,
+    cli        TEXT NOT NULL DEFAULT '',
+    sms_count  INTEGER NOT NULL DEFAULT 0,
+    payout_sum REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (stat_date, manager_id, agent_id, client_id, cli)
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sds_manager_date ON sms_daily_stats(manager_id, stat_date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sds_agent_date   ON sms_daily_stats(agent_id, stat_date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sds_client_date  ON sms_daily_stats(client_id, stat_date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sds_date         ON sms_daily_stats(stat_date)`);
+
+  // 8) PHASE-2: durable background jobs (exports, big imports, reports).
+  //    Restart-safe: workers poll this table; progress survives process restarts.
+  db.run(`CREATE TABLE IF NOT EXISTS jobs (
+    id           TEXT PRIMARY KEY,
+    type         TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'queued',
+    progress     INTEGER DEFAULT 0,
+    processed    INTEGER DEFAULT 0,
+    total        INTEGER DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    result_json  TEXT,
+    error        TEXT DEFAULT '',
+    created_by   INTEGER,
+    created_at   TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_jobs_user   ON jobs(created_by, created_at)`);
+
 }
 
 module.exports = { createTables };

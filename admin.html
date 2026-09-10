@@ -510,7 +510,7 @@
           <div class="table-controls">
             <div class="tc-left"><label>Show Records:</label>
               <select id="numLen" onchange="renderNumbers()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option value="All">All</option></select>
-              <div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue">CSV</button><button class="btn btn-green">Excel</button></div>
+              <div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue" onclick="exportNumbersCsv()" title="Export ALL numbers (current filters) to CSV — generated in background">CSV</button><button class="btn btn-green">Excel</button></div>
             </div>
             <div class="tc-right"><label>Search:</label><input type="text" id="numSearch" oninput="renderNumbers()" placeholder="Search..." /></div>
           </div>
@@ -1018,6 +1018,34 @@ async function runSmartDivide(){
   }catch(e){ alert('❌ '+e.message); }
 }
 
+/* =============== PHASE-2: background CSV export (worker thread on server) =============== */
+async function exportNumbersCsv(){
+  try{
+    const q=(document.getElementById('numSearch').value||'').trim();
+    const body={type:'numbers'};
+    if(q) body.search=q;
+    if(typeof numRangeFilter!=='undefined'&&numRangeFilter) body.range=numRangeFilter;
+    if(typeof clientFilterMode!=='undefined'){ if(clientFilterMode===1) body.allocation='unallocated'; if(clientFilterMode===2) body.allocation='allocated'; }
+    const r=await API.post('/exports',body);
+    alert('📤 Export started in background. The CSV download will start automatically when ready.');
+    pollExportJob(r.job_id);
+  }catch(e){ alert('❌ '+e.message); }
+}
+async function pollExportJob(id){
+  if(!id) return;
+  for(let i=0;i<720;i++){
+    await new Promise(r=>setTimeout(r,2000));
+    let j; try{ j=await API.get('/jobs/'+encodeURIComponent(id)); }catch(e){ return; }
+    if(j.status==='done'){
+      const a=document.createElement('a');
+      a.href='/api/exports/'+encodeURIComponent(id)+'/download?token='+encodeURIComponent((j.result&&j.result.token)||'');
+      a.download=''; document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    if(j.status==='failed'){ alert('❌ Export failed: '+(j.error||'unknown')); return; }
+  }
+}
+
 /* =============== IMPORT (file upload) =============== */
 function handleFile(inputId,infoId){const f=document.getElementById(inputId).files[0];
   document.getElementById(infoId).innerHTML=f?`Selected: <b>${f.name}</b> (${(f.size/1024).toFixed(1)} KB)`:'';}
@@ -1028,7 +1056,17 @@ async function doImport(inputId){const f=document.getElementById(inputId).files[
     const text=await f.text();
     const nums=text.split(/[\s,;]+/).map(x=>x.trim()).filter(x=>/^\+?\d{5,}$/.test(x));
     if(!nums.length){alert('No valid numbers found in the file.');return;}
-    try{const r=await API.post('/numbers/import',{range_name:rg,numbers:nums,file_name:f.name});if(r.background&&r.job){showImportJob(r.job);pollImportJob(r.job.job_id);}else{alert(`✅ ${r.inserted||0} numbers imported. Skipped: ${r.skipped||0}`);await loadRates();await loadNumbers();}}catch(e){alert('❌ '+e.message);}
+    try{
+      // PHASE-2: large files go straight to the server (streaming import) —
+      // the browser no longer parses + ships a giant JSON body.
+      if (f.size > 400 * 1024) {
+        const fd=new FormData(); fd.append('file',f); fd.append('range_name',rg); fd.append('file_name',f.name);
+        const r=await API.upload('/numbers/import-file',fd);
+        if(r.background&&r.job){showImportJob(r.job);pollImportJob(r.job.job_id);}
+        return;
+      }
+      const r=await API.post('/numbers/import',{range_name:rg,numbers:nums,file_name:f.name});if(r.background&&r.job){showImportJob(r.job);pollImportJob(r.job.job_id);}else{alert(`✅ ${r.inserted||0} numbers imported. Skipped: ${r.skipped||0}`);await loadRates();await loadNumbers();}
+    }catch(e){alert('❌ '+e.message);}
   } else {alert('For range import, use + Add Range for now. Number file import is live and working.');}
 }
 
