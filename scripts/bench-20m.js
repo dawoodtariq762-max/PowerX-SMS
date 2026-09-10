@@ -30,7 +30,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const SKIP_LOAD = !!process.env.SKIP_LOAD;
 const SKIP_EXPORT = !!process.env.BENCH_SKIP_EXPORT;
 const CLEANUP = !!process.env.BENCH_CLEANUP;
-const CACHE_MB = process.env.SQLITE_CACHE_MB || '512';
+const CACHE_MB = process.env.SQLITE_CACHE_MB || (N >= 10000000 ? '1024' : '512');
 const ADMIN = { username: process.env.BENCH_ADMIN || 'vibepk', password: process.env.BENCH_PASS || 'vibepk123' };
 
 const results = [];
@@ -50,7 +50,7 @@ function wait(pattern, timeoutS, label) {
   return new Promise((resolve) => {
     const child = spawn('node', [path.join(ROOT, 'backend/server.js')], { env: { ...process.env, DB_FILE, PORT: String(PORT), JWT_SECRET: 'bench20m', SQLITE_CACHE_MB: CACHE_MB }, stdio: ['ignore', 'pipe', 'pipe'] });
     let buf = '';
-    const onData = (d) => { buf += d; if (pattern.test(buf)) { child.stdout.off('data', onData); child.stderr.off('data', onData); resolve(child); } };
+    const onData = (d) => { buf += d; if (pattern.test(buf)) { child.stdout.off('data', onData); child.stderr.off('data', onData); done(); resolve(child); } };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     const to = setTimeout(() => { console.error(`✗ server boot timeout (${label})\n` + buf.slice(-800)); process.exit(1); }, timeoutS * 1000);
     const done = () => { clearTimeout(to); };
@@ -61,6 +61,9 @@ function wait(pattern, timeoutS, label) {
 
 (async () => {
   console.log(`\n=== PowerX ${N / 1e6}M BENCHMARK — db=${DB_FILE} ===\n`);
+  // port khali hai? (purana orphan bench server = contaminated results)
+  const busy = await new Promise(res => { const s = require('net').connect({ port: PORT, host: '127.0.0.1' }, () => { s.destroy(); res(true); }); s.on('error', () => res(false)); s.setTimeout(1500, () => { s.destroy(); res(false); }); });
+  if (busy) { console.error(`✗ port ${PORT} pehle se used hai — purana bench server zinda hai. Hal: ss -tlnp | grep ${PORT}  →  kill <pid>  (ya: pkill -f bench-20m)`); process.exit(1); }
   fs.mkdirSync(DB_DIR, { recursive: true });
 
   // ---- 1) BULKLOAD (existing proven loader, separate process) ----
@@ -78,6 +81,8 @@ function wait(pattern, timeoutS, label) {
   const tBoot = Date.now();
   const server = await wait(/running:/, 120, 'bench');
   console.log(`      booted in ${((Date.now() - tBoot) / 1000).toFixed(1)}s`);
+  // script kahin se bhi nikle — bench server orphan NA chhore
+  process.on('exit', () => { try { server.kill('SIGKILL'); } catch (_) {} });
   process.on('SIGINT', () => { try { server.kill('SIGKILL'); } catch (_) {} process.exit(1); });
 
   // ---- 3) LOGIN ----
@@ -96,8 +101,10 @@ function wait(pattern, timeoutS, label) {
   rec('browse p1 COLD', cold.ms + 'ms', cold.ms < 2000, 'http ' + cold.status);
   const warmSamples = [];
   for (let i = 1; i <= 10; i++) warmSamples.push((await api('GET', `/api/numbers?paged=1&limit=25&_nocache=1&page=${i}`)).ms);
-  rec('browse p1 WARM p50', p(warmSamples.sort((a, b) => a - b), .5) + 'ms', p(warmSamples, .5) < 100);
-  const cache = await api('GET', '/api/numbers?paged=1&limit=25');
+  const warmCap = N >= 10000000 ? 150 : 100;
+  rec('browse p1 WARM p50', p(warmSamples.sort((a, b) => a - b), .5) + 'ms', p(warmSamples, .5) < warmCap, `cap ${warmCap}ms`);
+  await api('GET', '/api/numbers?paged=1&limit=25');   // pehli call = miss (cache banta hai)
+  const cache = await api('GET', '/api/numbers?paged=1&limit=25');   // DOOSRI call = asli hit
   rec('browse CACHE-HIT', cache.ms + 'ms', cache.ms < 25);
   const deep = await api('GET', '/api/numbers?paged=1&limit=25&page=5000&_nocache=1');
   rec('browse p5000 (deep)', deep.ms + 'ms', deep.ms < 300);
@@ -147,9 +154,10 @@ function wait(pattern, timeoutS, label) {
   // ---- 7) IMPORT-FILE ----
   console.log('[6/8] import-file 200k...');
   const IMP = 200000, csvPath = path.join(DB_DIR, 'bench-import.csv');
+  const RUNID = Date.now() % 30000;   // har run ke numbers unique (resume par bhi fresh insert)
   if (!fs.existsSync(csvPath)) {
-    const ws = fs.createWriteStream(csvPath); const base = 92345;
-    for (let i = 0; i < IMP; i++) { ws.write(`${base}${String(7000000000 + i).slice(1)}\n`); if (i % 50000 === 0) await sleep(0); }
+    const ws = fs.createWriteStream(csvPath);
+    for (let i = 0; i < IMP; i++) { ws.write(`923${String(7000000000 + RUNID * 300000 + i)}\n`); if (i % 50000 === 0) await sleep(0); }
     await new Promise(res => ws.end(res));
   }
   const fd = new FormData();

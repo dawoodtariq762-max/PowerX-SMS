@@ -3,7 +3,7 @@
 // sync  : timers only (provider sync + automatic backups)
 // Rules: cluster mode KABHI nahi (SQLite single-writer). Dono processes same
 // DB file, WAL mode. Small VPS (<8GB / light traffic)? sirf `powerx-all` chalao
-// (POWerox_ROLE unset) — single process, sab kuch andar.
+// (POWERX_ROLE unset) — single process, sab kuch andar.
 module.exports = {
   apps: [
     {

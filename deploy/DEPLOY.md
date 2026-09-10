@@ -24,7 +24,7 @@ pm2 save && pm2 startup
 ```
 Single small box: run one process with no POWERX_ROLE (default 'all').
 
-**B) systemd:** copy the two units from `deploy/litestream/` pattern (api: `POWerox_ROLE=api`, sync: `POWerox_ROLE=sync`).
+**B) systemd:** copy the two units from `deploy/litestream/` pattern (api: `POWERX_ROLE=api`, sync: `POWERX_ROLE=sync`).
 
 **nginx:** `deploy/nginx-powerx.conf` (TLS, gzip, body-limit, static cache) — already Phase-1 ready.
 

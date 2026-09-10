@@ -3911,6 +3911,12 @@ const PORT = process.env.PORT || 4000;
   // SMPP channel. Independent of the HTTP integrations above: if it cannot
   // start (missing library, bad config, port in use) it reports the problem
   // and the rest of the panel carries on exactly as before.
+  // POWERX_ROLE=sync (timers-only process) skips SMPP + HTTP listen — the api
+  // process owns those ports. Without this, split mode crash-loops on EADDRINUSE.
+  if (POWERX_ROLE === 'sync') {
+    console.log('• POWERX_ROLE=sync: timers-only process — HTTP listen + SMPP skipped (api process owns them)');
+    return;
+  }
   try {
     smppService.start({
       log: console,
