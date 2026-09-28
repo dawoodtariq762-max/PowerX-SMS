@@ -1,0 +1,1377 @@
+/* ============================================================================
+   WHIZZ — Technology Platform · UI Theme  (whizz.css v1)
+   ---------------------------------------------------------------------------
+   Scoped entirely under html.whizz / body.whizz and loaded LAST, so it is the
+   final override layer. Nothing here leaks to pages that do not carry the
+   class. Visual layer only — no layout-breaking structural rules, no JS.
+
+   Palette taken from the supplied reference screenshots:
+     header / primary blue, dark navy navigation, white content, silver
+     separators. Deliberately limited — no decorative gradients or glows.
+   ========================================================================== */
+
+html.whizz,
+body.whizz {
+  /* ---- brand ---- */
+  --wz-blue:#1F6FA8;
+  --wz-blue-2:#15557F;
+  --wz-blue-3:#2A7AB8;
+  --wz-blue-soft:#E8F1F8;
+  --wz-blue-line:#BBD5E8;
+
+  /* ---- navigation ---- */
+  --wz-nav:#12395C;
+  --wz-nav-2:#0E2E4A;
+  --wz-nav-hover:#17456C;
+  --wz-nav-active:#1B5480;
+  --wz-nav-text:#D6E2EC;
+  --wz-nav-dim:#93AEC4;
+  --wz-nav-line:rgba(255,255,255,.08);
+
+  /* ---- surfaces ---- */
+  --wz-bg:#F4F6F8;
+  --wz-card:#FFFFFF;
+  --wz-head:#EDEFF2;
+  --wz-head-2:#DCE0E6;
+  --wz-line:#D7DCE3;
+  --wz-line-2:#E5E9EF;
+  --wz-zebra:#FAFBFC;
+  --wz-hover:#F0F6FB;
+
+  /* ---- text ---- */
+  --wz-text:#22303F;
+  --wz-text-2:#42546A;
+  --wz-muted:#6B7A8C;
+
+  /* ---- status ---- */
+  --wz-green:#5CB85C;
+  --wz-green-2:#479A47;
+  --wz-orange:#E8862A;
+  --wz-orange-2:#CC7220;
+  --wz-red:#D9534F;
+  --wz-red-2:#BF423E;
+  --wz-amber:#F7C948;
+  --wz-pink:#E6B3E6;
+
+  /* ---- shape ---- */
+  --wz-r:6px;
+  --wz-r-lg:8px;
+  --wz-shadow:0 1px 3px rgba(22,38,64,.08);
+  --wz-shadow-2:0 4px 16px rgba(22,38,64,.10);
+  --wz-ease:cubic-bezier(.22,.9,.3,1);
+
+  /* ---- remap legacy tokens so untouched components inherit the new look --- */
+  --bg:#F4F6F8; --bg2:#FFFFFF; --panel:#FFFFFF; --panel2:#F7F9FB; --row:#FFFFFF;
+  --border:#D7DCE3; --border2:#E5E9EF;
+  --text:#22303F; --muted:#6B7A8C; --ice:#22303F;
+  --sidebar:#12395C; --topbar:#1F6FA8;
+  --accent:#1F6FA8; --accent2:#2A7AB8; --violet:#1F6FA8;
+  --blue:#1F6FA8; --green:#5CB85C; --amber:#E8862A; --red:#D9534F; --cyan:#2A7AB8;
+  --grad:linear-gradient(90deg,#1F6FA8,#2A7AB8);
+  --shadow:0 1px 3px rgba(22,38,64,.08);
+  --glow:0 0 0 2px rgba(31,111,168,.18);
+  --px-bg:#F4F6F8; --px-bg-2:#FFFFFF; --px-surface:#FFFFFF; --px-surface-2:#F7F9FB;
+  --px-rail:#12395C; --px-accent:#1F6FA8; --px-accent-2:#2A7AB8;
+  --px-text:#22303F; --px-text-2:#42546A; --px-muted:#6B7A8C; --px-dim:#8A98A8;
+  --px-border:#D7DCE3; --px-border-2:#E5E9EF;
+  --px-ok:#5CB85C; --px-warn:#E8862A; --px-danger:#D9534F; --px-info:#2A7AB8;
+  --px-shadow:0 4px 16px rgba(22,38,64,.10);
+  --px-shadow-sm:0 1px 3px rgba(22,38,64,.08);
+  --px-glow:0 0 0 2px rgba(31,111,168,.18);
+  --px-radius:6px; --px-radius-lg:8px;
+}
+
+/* ============================ 1. BASE ==================================== */
+html.whizz { background:var(--wz-bg) !important; }
+body.whizz {
+  background:var(--wz-bg) !important;
+  color:var(--wz-text) !important;
+  font-family:'Inter','Segoe UI',Roboto,system-ui,-apple-system,sans-serif !important;
+  font-size:13.5px !important;
+  letter-spacing:0 !important;
+  -webkit-font-smoothing:antialiased;
+}
+body.whizz .main,
+body.whizz .content { background:transparent !important; color:var(--wz-text) !important; }
+body.whizz .content { padding:18px 20px 40px !important; }
+body.whizz ::selection { background:rgba(31,111,168,.18); color:var(--wz-text); }
+
+body.whizz ::-webkit-scrollbar { width:10px; height:10px; }
+body.whizz ::-webkit-scrollbar-track { background:#E9EDF1; }
+body.whizz ::-webkit-scrollbar-thumb { background:#BFC9D4; border-radius:8px; border:2px solid #E9EDF1; }
+body.whizz ::-webkit-scrollbar-thumb:hover { background:#A6B3C1; }
+body.whizz * { scrollbar-color:#BFC9D4 #E9EDF1; scrollbar-width:thin; }
+
+/* ======================= 2. SIDEBAR / NAVIGATION ========================= */
+body.whizz .rail,
+body.whizz .sidebar,
+body.whizz .appbar {
+  background:linear-gradient(180deg,var(--wz-nav) 0%,var(--wz-nav-2) 100%) !important;
+  border-right:1px solid rgba(0,0,0,.14) !important;
+  box-shadow:1px 0 0 rgba(0,0,0,.06) !important;
+  color:var(--wz-nav-text) !important;
+}
+body.whizz .rail::after,
+body.whizz .sidebar::after { display:none !important; }
+body.whizz .appbar { border-right:0 !important; border-bottom:1px solid rgba(0,0,0,.14) !important; }
+
+/* brand lockup */
+body.whizz .sb-brand,
+body.whizz .rail-brand,
+body.whizz .brand-text,
+body.whizz .appbar-top,
+body.whizz .brand {
+  background:rgba(0,0,0,.16) !important;
+  border-bottom:1px solid var(--wz-nav-line) !important;
+}
+body.whizz .sb-brand h1,
+body.whizz .brand-text h1,
+body.whizz .brand h1,
+body.whizz .sidebar h1,
+body.whizz .appbar h1,
+body.whizz .brand b {
+  color:#FFFFFF !important;
+  font-weight:700 !important;
+  font-size:15px !important;
+  letter-spacing:.06em !important;
+}
+body.whizz .sb-brand small,
+body.whizz .brand-text small,
+body.whizz .brand small,
+body.whizz .sidebar small,
+body.whizz .appbar small {
+  color:var(--wz-nav-dim) !important;
+  font-size:10.5px !important;
+  font-weight:600 !important;
+  letter-spacing:.12em !important;
+  text-transform:uppercase !important;
+}
+body.whizz .logo,
+body.whizz .sb-logo,
+body.whizz .brand .logo,
+body.whizz .rail .logo,
+body.whizz .brand-logo .logo {
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+  padding:0 !important;
+}
+body.whizz .whizz-logo-img,
+body.whizz .powerx-logo-img,
+body.whizz .logo img {
+  filter:none !important;
+  object-fit:contain !important;
+  max-width:100% !important;
+}
+
+/* section captions */
+body.whizz .sb-sec,
+body.whizz .sb-section,
+body.whizz .rsec,
+body.whizz .sec {
+  color:#7E9AB2 !important;
+  font-size:9.5px !important;
+  font-weight:700 !important;
+  letter-spacing:.16em !important;
+  text-transform:uppercase !important;
+  padding:14px 16px 6px !important;
+  margin:0 !important;
+}
+
+/* nav items */
+body.whizz .nav-item,
+body.whizz .sub-item,
+body.whizz .tab,
+body.whizz .ritem,
+body.whizz .rsubitem,
+body.whizz .navtab,
+body.whizz .item {
+  color:var(--wz-nav-text) !important;
+  background:transparent !important;
+  border-radius:0 !important;
+  font-weight:500 !important;
+  font-size:12.5px !important;
+  letter-spacing:.03em !important;
+  text-transform:uppercase !important;
+  position:relative !important;
+  border-bottom:1px solid var(--wz-nav-line) !important;
+  transition:background-color .18s var(--wz-ease), color .18s var(--wz-ease) !important;
+}
+body.whizz .rsubitem {
+  text-transform:none !important;
+  font-size:12.5px !important;
+  letter-spacing:0 !important;
+  background:rgba(0,0,0,.18) !important;
+  color:#AFC4D6 !important;
+  border-bottom:1px solid rgba(255,255,255,.05) !important;
+}
+body.whizz .nav-item svg,
+body.whizz .tab svg,
+body.whizz .ritem svg,
+body.whizz .rsubitem svg,
+body.whizz .item svg { stroke:currentColor !important; color:inherit !important; opacity:.9 !important; }
+
+body.whizz .nav-item:hover,
+body.whizz .sub-item:hover,
+body.whizz .tab:hover,
+body.whizz .ritem:hover,
+body.whizz .rsubitem:hover,
+body.whizz .navtab:hover,
+body.whizz .item:hover {
+  background:var(--wz-nav-hover) !important;
+  color:#FFFFFF !important;
+}
+body.whizz .nav-item.active,
+body.whizz .tab.active,
+body.whizz .ritem.active,
+body.whizz .navtab.active,
+body.whizz .item.active {
+  background:var(--wz-nav-active) !important;
+  color:#FFFFFF !important;
+  box-shadow:none !important;
+  font-weight:600 !important;
+}
+body.whizz .nav-item.active::before,
+body.whizz .ritem.active::before,
+body.whizz .item.active::before,
+body.whizz .tab.active::before {
+  content:"" !important;
+  position:absolute !important;
+  left:0 !important; top:0 !important; bottom:0 !important;
+  width:3px !important;
+  border-radius:0 !important;
+  background:#4DA3DC !important;
+  box-shadow:none !important;
+}
+body.whizz .nav-item.active svg,
+body.whizz .tab.active svg,
+body.whizz .ritem.active svg { stroke:#FFFFFF !important; color:#FFFFFF !important; opacity:1 !important; }
+body.whizz .sub-item.active,
+body.whizz .rsubitem.active {
+  background:var(--wz-nav-active) !important;
+  color:#FFFFFF !important;
+  box-shadow:inset 3px 0 0 #4DA3DC !important;
+  font-weight:600 !important;
+}
+body.whizz .rsubitem .d { background:currentColor !important; }
+body.whizz .ritem .chev,
+body.whizz .nav-item .chev { color:var(--wz-nav-dim) !important; }
+
+/* ---- 2b. animated collapsible submenu (height driven by whizz-ui.js) ----
+   The height comes from --wz-sub-h, which the JS sets to the MEASURED content
+   height. Declared with !important at a higher specificity than the legacy
+   `.rsub.open{max-height:500px!important}` rule so the motion maps 1:1 to what
+   is actually on screen instead of racing to an arbitrary 500px. */
+body.whizz .rsub,
+body.whizz .subnav,
+body.whizz .nav-sub {
+  overflow:hidden !important;
+  max-height:var(--wz-sub-h, 0px) !important;
+  opacity:.45;
+  transition:max-height .26s var(--wz-ease), opacity .2s ease !important;
+}
+body.whizz .rsub.open,
+body.whizz .subnav.open,
+body.whizz .nav-sub.open {
+  max-height:var(--wz-sub-h, 0px) !important;
+  opacity:1;
+}
+body.whizz .rail:not(:hover) .rsub,
+body.whizz .rail:not(:hover) .rsub.open { max-height:var(--wz-sub-h, 0px) !important; }
+body.whizz .ritem .chev,
+body.whizz .nav-item .chev,
+body.whizz .wz-chev {
+  transition:transform .26s var(--wz-ease) !important;
+  display:inline-block !important;
+}
+body.whizz .ritem.open .chev,
+body.whizz .nav-item.open .chev,
+body.whizz .ritem.open .wz-chev { transform:rotate(90deg) !important; }
+
+/* ============================ 3. TOP BAR ================================= */
+body.whizz .topbar,
+body.whizz .tb1,
+body.whizz .navshell,
+body.whizz .mgr-topbar,
+body.whizz .top {
+  background:linear-gradient(180deg,var(--wz-blue) 0%,var(--wz-blue-2) 100%) !important;
+  border-bottom:1px solid rgba(0,0,0,.12) !important;
+  box-shadow:0 1px 4px rgba(22,38,64,.14) !important;
+  color:#FFFFFF !important;
+}
+body.whizz .topbar::before,
+body.whizz .tb1::before { display:none !important; }
+body.whizz .tb-title { color:#FFFFFF !important; font-weight:600 !important; letter-spacing:.02em !important; }
+body.whizz .tb-btn,
+body.whizz .hamburger,
+body.whizz .icon-btn {
+  color:rgba(255,255,255,.88) !important;
+  background:transparent !important;
+  border-radius:var(--wz-r) !important;
+  transition:background-color .16s ease, color .16s ease !important;
+}
+body.whizz .tb-btn:hover,
+body.whizz .hamburger:hover { background:rgba(255,255,255,.16) !important; color:#FFFFFF !important; }
+body.whizz .clock,
+body.whizz .tb-date {
+  background:rgba(255,255,255,.14) !important;
+  color:#FFFFFF !important;
+  border:1px solid rgba(255,255,255,.2) !important;
+  border-radius:var(--wz-r) !important;
+  font-variant-numeric:tabular-nums !important;
+  font-size:12px !important;
+}
+body.whizz .avatar,
+body.whizz .av,
+body.whizz .who .av {
+  background:rgba(255,255,255,.2) !important;
+  color:#FFFFFF !important;
+  border:1px solid rgba(255,255,255,.3) !important;
+  box-shadow:none !important;
+  font-weight:700 !important;
+}
+body.whizz .who .nm,
+body.whizz .who .t1,
+body.whizz .who .pt { color:#FFFFFF !important; }
+body.whizz .who .rl,
+body.whizz .who .ps,
+body.whizz .who .t2 { color:rgba(255,255,255,.75) !important; }
+
+/* the user block sits ON the blue bar — legacy gave it the white panel
+   background (var(--row)), which made white-on-white text */
+body.whizz .who {
+  background:rgba(255,255,255,.12) !important;
+  border:1px solid rgba(255,255,255,.22) !important;
+  border-radius:22px !important;
+  box-shadow:none !important;
+}
+body.whizz .who:hover { background:rgba(255,255,255,.18) !important; }
+
+/* nav labels read as sentence case in the reference, not shouted caps */
+body.whizz .ritem,
+body.whizz .rsubitem,
+body.whizz .nav-item,
+body.whizz .sub-item,
+body.whizz .tab,
+body.whizz .ritem .lbl,
+body.whizz .rsubitem .lbl,
+body.whizz .nav-item span,
+body.whizz .sub-item span { text-transform:none !important; }
+
+/* ====================== 4. PAGE HEAD / BREADCRUMB ======================== */
+body.whizz .page-head {
+  border-bottom:0 !important;
+  background:var(--wz-card) !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r) !important;
+  padding:12px 16px !important;
+  margin-bottom:16px !important;
+  box-shadow:var(--wz-shadow) !important;
+}
+body.whizz .page-head h2 {
+  color:var(--wz-text) !important;
+  font-weight:600 !important;
+  font-size:17px !important;
+  letter-spacing:-.01em !important;
+  margin:0 !important;
+}
+body.whizz .breadcrumb {
+  color:var(--wz-muted) !important;
+  font-size:12px !important;
+  margin-top:3px !important;
+}
+body.whizz .breadcrumb b { color:var(--wz-blue) !important; font-weight:600 !important; }
+body.whizz .sub,
+body.whizz .muted,
+body.whizz .hint,
+body.whizz .bar-label,
+body.whizz .cell-sub,
+body.whizz .info { color:var(--wz-muted) !important; }
+body.whizz .readonly-note { color:var(--wz-muted) !important; font-size:12px !important; }
+body.whizz .page > .toolbar::before,
+body.whizz .page > .table-wrap::before,
+body.whizz .page > .card::before,
+body.whizz .page > .grid2::before { display:none !important; }
+
+/* ====================== 5. CARDS / PANELS / TABLES ======================= */
+body.whizz .card,
+body.whizz .toolbar,
+body.whizz .table-wrap,
+body.whizz .box,
+body.whizz .dash-note-card {
+  background:var(--wz-card) !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r) !important;
+  box-shadow:var(--wz-shadow) !important;
+  color:var(--wz-text) !important;
+}
+body.whizz .card:hover,
+body.whizz .table-wrap:hover { border-color:var(--wz-line) !important; }
+body.whizz .card-head {
+  background:linear-gradient(180deg,var(--wz-head) 0%,var(--wz-head-2) 100%) !important;
+  border-bottom:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r) var(--wz-r) 0 0 !important;
+  padding:10px 14px !important;
+}
+body.whizz .card-head h3,
+body.whizz .card h3,
+body.whizz .box h3 {
+  color:var(--wz-text) !important;
+  font-weight:600 !important;
+  font-size:12.5px !important;
+  letter-spacing:.06em !important;
+  text-transform:uppercase !important;
+}
+body.whizz .card-head .sub { color:var(--wz-muted) !important; text-transform:none !important; letter-spacing:0 !important; }
+body.whizz .grid2,
+body.whizz .stats-grid,
+body.whizz .grid { background:transparent !important; }
+
+/* tables */
+body.whizz table { border-collapse:collapse !important; background:var(--wz-card) !important; }
+body.whizz thead th,
+body.whizz table th {
+  background:linear-gradient(180deg,var(--wz-head) 0%,var(--wz-head-2) 100%) !important;
+  color:var(--wz-text-2) !important;
+  font-weight:600 !important;
+  font-size:11.5px !important;
+  letter-spacing:.04em !important;
+  text-transform:none !important;
+  border-top:0 !important;
+  border-bottom:1px solid var(--wz-line) !important;
+  border-right:1px solid var(--wz-line-2) !important;
+  padding:9px 11px !important;
+  position:sticky !important; top:0 !important; z-index:2 !important;
+}
+body.whizz thead th:last-child { border-right:0 !important; }
+body.whizz tbody tr td {
+  background:transparent !important;
+  color:var(--wz-text) !important;
+  border-bottom:1px solid var(--wz-line-2) !important;
+  border-right:1px solid var(--wz-line-2) !important;
+  padding:9px 11px !important;
+  font-size:12.5px !important;
+}
+body.whizz tbody tr td:last-child { border-right:0 !important; }
+body.whizz tbody tr:nth-child(even) td { background:var(--wz-zebra) !important; }
+body.whizz tbody tr:hover td { background:var(--wz-hover) !important; color:var(--wz-text) !important; }
+body.whizz tbody tr:hover { transform:none !important; }
+body.whizz .tscroll { border-color:var(--wz-line) !important; }
+body.whizz .table-controls,
+body.whizz .table-foot,
+body.whizz .filter-row,
+body.whizz .bulk-bar {
+  background:var(--wz-card) !important;
+  color:var(--wz-muted) !important;
+  border-color:var(--wz-line) !important;
+}
+body.whizz .table-controls label,
+body.whizz .tc-left label,
+body.whizz .tc-right label,
+body.whizz .filter-row label { color:var(--wz-text-2) !important; font-weight:600 !important; font-size:12px !important; }
+body.whizz .table-foot .info { color:var(--wz-muted) !important; font-size:12px !important; }
+body.whizz .mono { font-family:'JetBrains Mono',Consolas,Menlo,monospace !important; color:var(--wz-text) !important; }
+body.whizz .cell-money { color:var(--wz-green-2) !important; font-weight:600 !important; font-variant-numeric:tabular-nums !important; }
+body.whizz .payout-rate,
+body.whizz .rate-cell,
+body.whizz .money { color:var(--wz-orange-2) !important; font-weight:600 !important; font-variant-numeric:tabular-nums !important; }
+body.whizz .otp { color:var(--wz-blue) !important; font-weight:700 !important; letter-spacing:.06em !important; }
+body.whizz .msg-body { color:var(--wz-text-2) !important; }
+body.whizz .check-ok { color:var(--wz-green-2) !important; }
+
+/* pagination */
+body.whizz .pagination button {
+  background:var(--wz-card) !important;
+  border:1px solid var(--wz-line) !important;
+  color:var(--wz-text-2) !important;
+  border-radius:var(--wz-r) !important;
+  font-size:12px !important;
+  transition:background-color .16s ease, border-color .16s ease !important;
+}
+body.whizz .pagination button:hover:not(.active) { background:var(--wz-blue-soft) !important; border-color:var(--wz-blue-line) !important; color:var(--wz-blue-2) !important; }
+body.whizz .pagination button.active {
+  background:var(--wz-blue) !important;
+  color:#FFFFFF !important;
+  border-color:var(--wz-blue) !important;
+  font-weight:600 !important;
+  box-shadow:none !important;
+}
+
+/* ============================ 6. BUTTONS ================================= */
+body.whizz .btn,
+body.whizz button.btn,
+body.whizz .ms-btn {
+  border-radius:var(--wz-r) !important;
+  font-weight:600 !important;
+  font-size:12.5px !important;
+  letter-spacing:.01em !important;
+  border:1px solid transparent !important;
+  box-shadow:none !important;
+  transition:background-color .16s ease, border-color .16s ease, transform .12s ease !important;
+}
+body.whizz .btn-blue,
+body.whizz .btn-purple,
+body.whizz .btn-teal,
+body.whizz .btn-rose,
+body.whizz .ms-btn.primary,
+body.whizz button.btn-gold,
+body.whizz .btn:not([class*="btn-"]) {
+  background:var(--wz-blue) !important;
+  color:#FFFFFF !important;
+  border:1px solid var(--wz-blue-2) !important;
+  box-shadow:none !important;
+}
+body.whizz .btn-blue:hover,
+body.whizz .btn-purple:hover,
+body.whizz .btn:not([class*="btn-"]):hover { background:var(--wz-blue-2) !important; }
+body.whizz .btn-green { background:var(--wz-green) !important; color:#FFF !important; border:1px solid var(--wz-green-2) !important; }
+body.whizz .btn-green:hover { background:var(--wz-green-2) !important; }
+body.whizz .btn-amber { background:var(--wz-orange) !important; color:#FFF !important; border:1px solid var(--wz-orange-2) !important; }
+body.whizz .btn-amber:hover { background:var(--wz-orange-2) !important; }
+body.whizz .btn-red { background:var(--wz-red) !important; color:#FFF !important; border:1px solid var(--wz-red-2) !important; }
+body.whizz .btn-red:hover { background:var(--wz-red-2) !important; }
+body.whizz .btn-ghost,
+body.whizz .ms-btn.ghost,
+body.whizz .btn.ghost {
+  background:var(--wz-card) !important;
+  color:var(--wz-text-2) !important;
+  border:1px solid var(--wz-line) !important;
+}
+body.whizz .btn-ghost:hover,
+body.whizz .btn.ghost:hover { background:var(--wz-blue-soft) !important; border-color:var(--wz-blue-line) !important; color:var(--wz-blue-2) !important; }
+body.whizz .btn:hover { transform:none !important; filter:none !important; }
+body.whizz .btn:active { transform:translateY(1px) !important; }
+body.whizz .btn:focus-visible { outline:2px solid var(--wz-blue) !important; outline-offset:2px !important; }
+
+/* icon buttons used across the toolbars */
+body.whizz .gx-btn {
+  background:var(--wz-card) !important;
+  border:1px solid var(--wz-line) !important;
+  color:var(--wz-text-2) !important;
+  border-radius:var(--wz-r) !important;
+  box-shadow:none !important;
+  transition:background-color .16s ease, border-color .16s ease, color .16s ease !important;
+}
+body.whizz .gx-btn:hover { background:var(--wz-blue-soft) !important; border-color:var(--wz-blue-line) !important; color:var(--wz-blue-2) !important; }
+body.whizz .gx-btn.gx-blue { background:var(--wz-blue) !important; border-color:var(--wz-blue-2) !important; color:#FFF !important; }
+body.whizz .gx-btn.gx-blue:hover { background:var(--wz-blue-2) !important; }
+body.whizz .gx-btn.gx-green { background:var(--wz-green) !important; border-color:var(--wz-green-2) !important; color:#FFF !important; }
+body.whizz .gx-btn.gx-green:hover { background:var(--wz-green-2) !important; }
+body.whizz .gx-btn.danger { background:var(--wz-red) !important; border-color:var(--wz-red-2) !important; color:#FFF !important; }
+body.whizz .gx-btn.danger:hover { background:var(--wz-red-2) !important; }
+body.whizz .gx-btn svg { stroke:currentColor !important; }
+body.whizz .exp-btns .gx-btn { min-width:34px !important; }
+
+/* ===================== 7. FORM CONTROLS / DROPDOWNS ====================== */
+body.whizz input,
+body.whizz select,
+body.whizz textarea,
+body.whizz .ms-field input {
+  background:#FFFFFF !important;
+  color:var(--wz-text) !important;
+  border:1px solid #C9D2DC !important;
+  border-radius:var(--wz-r) !important;
+  font-size:12.5px !important;
+  transition:border-color .15s ease, box-shadow .15s ease !important;
+}
+body.whizz input::placeholder,
+body.whizz textarea::placeholder { color:#9AA7B4 !important; }
+body.whizz input:hover,
+body.whizz select:hover,
+body.whizz textarea:hover { border-color:#AEBCC9 !important; }
+body.whizz input:focus,
+body.whizz select:focus,
+body.whizz textarea:focus {
+  border-color:var(--wz-blue) !important;
+  box-shadow:0 0 0 3px rgba(31,111,168,.14) !important;
+  background:#FFFFFF !important;
+  outline:none !important;
+}
+body.whizz select option { background:#FFFFFF !important; color:var(--wz-text) !important; }
+body.whizz input[type="checkbox"],
+body.whizz input[type="radio"] { accent-color:var(--wz-blue) !important; }
+body.whizz label,
+body.whizz .form-group label,
+body.whizz .field label { color:var(--wz-text-2) !important; font-weight:600 !important; }
+body.whizz .form-group .hint { color:var(--wz-muted) !important; }
+body.whizz .req { color:var(--wz-red) !important; }
+body.whizz .upload-box {
+  background:#FAFBFC !important;
+  border:2px dashed #C9D2DC !important;
+  color:var(--wz-muted) !important;
+  border-radius:var(--wz-r-lg) !important;
+}
+body.whizz .upload-box:hover { border-color:var(--wz-blue) !important; background:var(--wz-blue-soft) !important; }
+body.whizz .upload-box svg,
+body.whizz .upload-box b { stroke:var(--wz-blue) !important; color:var(--wz-blue) !important; }
+
+/* ---- searchable dropdown (galaxy.js .sd-* component) ---- */
+body.whizz .searchable-dropdown .sd-trigger,
+body.whizz .sd-wrap .sd-display,
+body.whizz .sd-display,
+body.whizz .sd-trigger {
+  background:#FFFFFF !important;
+  color:var(--wz-text) !important;
+  border:1px solid #C9D2DC !important;
+  border-radius:var(--wz-r) !important;
+  min-height:38px !important;
+  padding:8px 12px !important;
+  font-size:13px !important;
+  cursor:pointer;
+  transition:border-color .16s ease, box-shadow .16s ease !important;
+}
+body.whizz .sd-trigger:hover,
+body.whizz .sd-display:hover { border-color:#AEBCC9 !important; }
+body.whizz .searchable-dropdown.wz-open .sd-trigger {
+  border-color:var(--wz-blue) !important;
+  box-shadow:0 0 0 3px rgba(31,111,168,.13) !important;
+}
+body.whizz .sd-label { color:var(--wz-text) !important; }
+body.whizz .sd-caret { color:var(--wz-muted) !important; transition:transform .2s var(--wz-ease) !important; }
+body.whizz .sd-wrap.wz-open .sd-caret,
+body.whizz .searchable-dropdown.wz-open .sd-caret { transform:rotate(180deg) !important; }
+body.whizz .sd-menu {
+  background:#FFFFFF !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r) !important;
+  box-shadow:0 8px 24px rgba(22,38,64,.16) !important;
+  /* animation driven by whizz-ui.js adding .wz-in / .wz-out */
+  transform-origin:top center;
+}
+body.whizz .sd-menu.wz-in  { animation:wzMenuIn .2s var(--wz-ease) both; }
+/* .wz-out keeps the menu painted for the duration of the fade-out only. The
+   inline display:none set by galaxy.js is already in place underneath, so the
+   component's own open/closed state stays truthful the whole time. */
+body.whizz .sd-menu.wz-out { display:flex !important; animation:wzMenuOut .14s ease both; pointer-events:none !important; }
+@keyframes wzMenuIn  { from{opacity:0;transform:translateY(-6px) scaleY(.96)} to{opacity:1;transform:translateY(0) scaleY(1)} }
+@keyframes wzMenuOut { from{opacity:1;transform:translateY(0) scaleY(1)} to{opacity:0;transform:translateY(-5px) scaleY(.97)} }
+body.whizz .sd-search-box { background:#F7F9FB !important; border-bottom:1px solid var(--wz-line-2) !important; }
+body.whizz .sd-search-box input { background:#FFFFFF !important; border:1px solid #C9D2DC !important; color:var(--wz-text) !important; }
+body.whizz .sd-option { color:var(--wz-text) !important; transition:background-color .12s ease !important; }
+body.whizz .sd-option:hover { background:var(--wz-blue-soft) !important; }
+body.whizz .sd-option.selected { background:var(--wz-blue) !important; color:#FFFFFF !important; }
+body.whizz .sd-no-results { color:var(--wz-muted) !important; }
+
+/* ======================= 8. TAGS / CHIPS / MISC ========================== */
+body.whizz .tag,
+body.whizz .chip {
+  border-radius:3px !important;
+  font-weight:600 !important;
+  font-size:11px !important;
+  letter-spacing:.02em !important;
+  box-shadow:none !important;
+  background:#EDF1F5 !important;
+  color:var(--wz-text-2) !important;
+  border:1px solid var(--wz-line) !important;
+}
+body.whizz .tag-mgr   { background:#E6F0F8 !important; color:#1B5480 !important; border-color:#BBD5E8 !important; }
+body.whizz .tag-agt   { background:#E7F4EC !important; color:#2E7D4F !important; border-color:#BEE0CB !important; }
+body.whizz .tag-cli,
+body.whizz .tag-client{ background:#EDF1F5 !important; color:#42546A !important; border-color:#D7DCE3 !important; }
+body.whizz .tag-blue  { background:#E6F0F8 !important; color:#1B5480 !important; border-color:#BBD5E8 !important; }
+body.whizz .tag-green { background:#E7F4EC !important; color:#2E7D4F !important; border-color:#BEE0CB !important; }
+body.whizz .tag-amber { background:#FDF3E3 !important; color:#8A5B14 !important; border-color:#F0DCB8 !important; }
+body.whizz .tag-red   { background:#FBEAEA !important; color:#A33B38 !important; border-color:#EFC9C8 !important; }
+body.whizz .tag-gray  { background:#EDF1F5 !important; color:var(--wz-muted) !important; border-color:var(--wz-line) !important; }
+body.whizz .tag .x { opacity:.6 !important; }
+body.whizz .tag .x:hover { opacity:1 !important; color:var(--wz-red) !important; }
+body.whizz .drill .dchip {
+  background:var(--wz-card) !important;
+  border:1px solid var(--wz-line) !important;
+  color:var(--wz-text-2) !important;
+  border-radius:999px !important;
+  transition:background-color .16s ease, border-color .16s ease !important;
+}
+body.whizz .drill .dchip:hover { border-color:var(--wz-blue-line) !important; background:var(--wz-blue-soft) !important; }
+body.whizz .drill .dchip.active { background:var(--wz-blue) !important; color:#FFFFFF !important; border-color:var(--wz-blue) !important; }
+body.whizz .section-title { color:var(--wz-blue) !important; font-weight:600 !important; }
+body.whizz .gx-nav-badge {
+  background:var(--wz-red) !important; color:#FFF !important;
+  border-radius:999px !important; font-size:10px !important; font-weight:700 !important;
+}
+body.whizz .gx-chip { background:#EDF1F5 !important; color:var(--wz-text-2) !important; border:1px solid var(--wz-line) !important; }
+
+/* ====================== 9. MODALS / OVERLAYS / TOASTS ==================== */
+body.whizz .modal-overlay,
+body.whizz .overlay { background:rgba(22,38,64,.42) !important; backdrop-filter:blur(2px) !important; }
+body.whizz .modal,
+body.whizz .modal-box,
+body.whizz .ms-modal {
+  background:#FFFFFF !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r-lg) !important;
+  box-shadow:0 20px 60px rgba(22,38,64,.26) !important;
+  color:var(--wz-text) !important;
+}
+body.whizz .modal-head,
+body.whizz .ms-modal-head {
+  background:linear-gradient(180deg,var(--wz-head) 0%,var(--wz-head-2) 100%) !important;
+  border-bottom:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r-lg) var(--wz-r-lg) 0 0 !important;
+}
+body.whizz .modal-head h3,
+body.whizz .ms-modal-head h3 { color:var(--wz-text) !important; }
+body.whizz .modal-foot,
+body.whizz .ms-modal-foot { border-top:1px solid var(--wz-line) !important; background:#FAFBFC !important; }
+body.whizz .modal-close { color:var(--wz-muted) !important; }
+body.whizz .modal-close:hover { color:var(--wz-red) !important; }
+body.whizz .ms-notif-panel,
+body.whizz .ms-profile-menu {
+  background:#FFFFFF !important;
+  border:1px solid var(--wz-line) !important;
+  color:var(--wz-text) !important;
+  box-shadow:0 12px 36px rgba(22,38,64,.18) !important;
+  border-radius:var(--wz-r) !important;
+}
+body.whizz .ms-notif-head,
+body.whizz .ms-notif-foot { background:#F7F9FB !important; border-color:var(--wz-line) !important; color:var(--wz-text) !important; }
+body.whizz .ms-notif-item { border-color:var(--wz-line-2) !important; color:var(--wz-text-2) !important; }
+body.whizz .ms-notif-item:hover,
+body.whizz .ms-notif-item.unread,
+body.whizz .ms-profile-item:hover { background:var(--wz-blue-soft) !important; }
+body.whizz .ms-profile-item { color:var(--wz-text) !important; }
+body.whizz .ms-toast {
+  background:#FFFFFF !important;
+  border:1px solid var(--wz-line) !important;
+  color:var(--wz-text) !important;
+  box-shadow:0 12px 32px rgba(22,38,64,.2) !important;
+}
+body.whizz .ms-progress { background:var(--wz-blue) !important; }
+
+/* ============= 10. WHIZZ DASHBOARD COMPONENTS (reference layout) ========= */
+/* quick-link tile row */
+body.whizz .wz-tiles {
+  display:grid;
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:14px;
+  margin-bottom:16px;
+}
+body.whizz .wz-tile {
+  background:var(--wz-card);
+  border:1px solid var(--wz-line);
+  border-radius:var(--wz-r);
+  box-shadow:var(--wz-shadow);
+  padding:16px 10px 13px;
+  text-align:center;
+  cursor:pointer;
+  transition:border-color .18s var(--wz-ease), box-shadow .18s var(--wz-ease), transform .18s var(--wz-ease);
+  -webkit-tap-highlight-color:transparent;
+}
+body.whizz .wz-tile:hover {
+  border-color:var(--wz-blue-line);
+  box-shadow:0 4px 14px rgba(22,38,64,.12);
+  transform:translateY(-2px);
+}
+body.whizz .wz-tile:focus-visible { outline:2px solid var(--wz-blue); outline-offset:2px; }
+body.whizz .wz-tile-ic {
+  width:46px; height:46px; margin:0 auto 9px;
+  display:flex; align-items:center; justify-content:center;
+  border-radius:var(--wz-r);
+  background:var(--wz-blue-soft);
+  color:var(--wz-blue);
+}
+body.whizz .wz-tile-ic svg { width:24px; height:24px; stroke:currentColor; fill:none; stroke-width:1.8; }
+body.whizz .wz-tile-t {
+  font-size:12.5px; font-weight:600; color:var(--wz-text-2); letter-spacing:.01em;
+}
+body.whizz .wz-tile:hover .wz-tile-t { color:var(--wz-blue-2); }
+
+/* horizontal stat strips */
+body.whizz .wz-strips {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+  margin-bottom:16px;
+}
+body.whizz .wz-strip {
+  background:var(--wz-card);
+  border:1px solid var(--wz-line);
+  border-radius:var(--wz-r);
+  box-shadow:var(--wz-shadow);
+  padding:12px 14px;
+  display:flex; align-items:center; gap:13px;
+}
+body.whizz .wz-strip-ic {
+  width:42px; height:42px; flex:0 0 42px;
+  display:flex; align-items:center; justify-content:center;
+  border-radius:var(--wz-r);
+  background:var(--wz-blue-soft); color:var(--wz-blue);
+}
+body.whizz .wz-strip-ic svg { width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.8; }
+body.whizz .wz-strip-b { min-width:0; flex:1; }
+body.whizz .wz-strip-l {
+  font-size:12.5px; font-weight:600; color:var(--wz-text-2);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+body.whizz .wz-strip-v {
+  font-size:19px; font-weight:700; color:var(--wz-text);
+  line-height:1.25; font-variant-numeric:tabular-nums;
+}
+body.whizz .wz-strip-up { color:var(--wz-green); flex:0 0 auto; font-size:17px; line-height:1; }
+
+/* circular metrics column */
+body.whizz .wz-metrics { display:flex; flex-direction:column; gap:14px; }
+body.whizz .wz-metric {
+  background:var(--wz-card);
+  border:1px solid var(--wz-line);
+  border-radius:var(--wz-r);
+  box-shadow:var(--wz-shadow);
+  padding:14px;
+  display:flex; align-items:center; gap:14px;
+}
+body.whizz .wz-metric-ic {
+  width:52px; height:52px; flex:0 0 52px;
+  border-radius:50%;
+  border:2px solid var(--wz-line);
+  display:flex; align-items:center; justify-content:center;
+  color:var(--wz-blue); background:#FFFFFF;
+}
+body.whizz .wz-metric-ic svg { width:24px; height:24px; stroke:currentColor; fill:none; stroke-width:1.8; }
+body.whizz .wz-metric-v {
+  font-size:21px; font-weight:700; color:var(--wz-green-2);
+  line-height:1.15; font-variant-numeric:tabular-nums;
+}
+body.whizz .wz-metric-l {
+  font-size:11px; font-weight:600; color:var(--wz-muted);
+  text-transform:uppercase; letter-spacing:.07em; margin-top:2px;
+}
+body.whizz .wz-dash-main { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; align-items:start; }
+
+/* balance cards (payment section reference) */
+body.whizz .wz-balances { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-bottom:16px; }
+body.whizz .wz-balance {
+  border-radius:var(--wz-r); padding:16px 18px; text-align:center;
+  font-size:19px; font-weight:700; color:#3A3320; border:1px solid rgba(0,0,0,.08);
+}
+body.whizz .wz-balance.usd { background:var(--wz-amber); }
+body.whizz .wz-balance.eur { background:var(--wz-green); color:#FFFFFF; }
+body.whizz .wz-balance.gbp { background:var(--wz-pink); color:#4A2A4A; }
+
+/* legacy dashboard metric cards → flat light treatment */
+body.whizz .stat-card,
+body.whizz .stat-card.dash-metric,
+body.whizz .metric {
+  background:var(--wz-card) !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r) !important;
+  box-shadow:var(--wz-shadow) !important;
+  color:var(--wz-text) !important;
+  overflow:hidden !important;
+}
+body.whizz .stat-card.dash-metric::before,
+body.whizz .stat-card.dash-metric::after { display:none !important; }
+body.whizz .stat-card.dash-metric:hover { transform:none !important; box-shadow:0 4px 14px rgba(22,38,64,.12) !important; border-color:var(--wz-blue-line) !important; }
+body.whizz .stat-info p { color:var(--wz-muted) !important; font-weight:600 !important; }
+body.whizz .stat-info h3 { color:var(--wz-text) !important; font-weight:700 !important; }
+body.whizz .stat-info span { color:var(--wz-muted) !important; }
+body.whizz .dash-go { color:var(--wz-blue) !important; }
+
+/* chart */
+body.whizz .chart { background:transparent !important; }
+body.whizz .bar { background:var(--wz-blue) !important; border-radius:3px 3px 0 0 !important; }
+body.whizz .bar-track { background:#EFF2F5 !important; border-radius:3px !important; }
+body.whizz .bar .val { color:var(--wz-text-2) !important; font-weight:600 !important; }
+body.whizz .bar-label { color:var(--wz-muted) !important; }
+body.whizz .dot { box-shadow:0 0 0 4px rgba(92,184,92,.18) !important; }
+
+/* ===================== 11. PAGE TRANSITION / MOTION ====================== */
+@keyframes wzFade { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+body.whizz .page.active { animation:wzFade .22s var(--wz-ease) both !important; }
+@media (prefers-reduced-motion:reduce) {
+  body.whizz *, body.whizz *::before, body.whizz *::after {
+    animation-duration:.01ms !important; transition-duration:.01ms !important;
+  }
+}
+
+/* ========================== 12. RESPONSIVE =============================== */
+@media (max-width:1200px) {
+  body.whizz .wz-dash-main { grid-template-columns:minmax(0,1fr) 260px; }
+}
+@media (max-width:1024px) {
+  body.whizz .wz-tiles { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  body.whizz .wz-dash-main { grid-template-columns:1fr; }
+  body.whizz .wz-metrics { flex-direction:row; flex-wrap:wrap; }
+  body.whizz .wz-metric { flex:1 1 220px; }
+}
+@media (max-width:900px) {
+  body.whizz .content { padding:14px 14px 34px !important; }
+  body.whizz .rail,
+  body.whizz .sidebar { box-shadow:6px 0 28px rgba(22,38,64,.26) !important; }
+  body.whizz .wz-strips { grid-template-columns:1fr; }
+  body.whizz .wz-balances { grid-template-columns:1fr; }
+}
+@media (max-width:768px) {
+  body.whizz .wz-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
+  body.whizz .page-head { padding:11px 13px !important; }
+  body.whizz .page-head h2 { font-size:15.5px !important; }
+  body.whizz .wz-metric { flex:1 1 100%; }
+  body.whizz .table-controls,
+  body.whizz .filter-row { flex-wrap:wrap !important; gap:8px !important; }
+  body.whizz .tc-left,
+  body.whizz .tc-right { width:100% !important; }
+  body.whizz .tc-right input { width:100% !important; }
+  body.whizz .head-actions { flex-wrap:wrap !important; gap:7px !important; }
+}
+@media (max-width:480px) {
+  body.whizz { font-size:13px !important; }
+  body.whizz .content { padding:11px 11px 30px !important; }
+  body.whizz .wz-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  body.whizz .wz-tile { padding:13px 7px 11px; }
+  body.whizz .wz-tile-ic { width:40px; height:40px; }
+  body.whizz .wz-tile-t { font-size:11.5px; }
+  body.whizz .wz-strip-v { font-size:17px; }
+  body.whizz .modal,
+  body.whizz .modal-box { width:calc(100vw - 20px) !important; max-width:none !important; }
+  body.whizz .btn,
+  body.whizz .gx-btn { min-height:38px !important; }
+}
+/* tables never break the page — scroll inside their own wrapper */
+body.whizz .tscroll { overflow-x:auto !important; -webkit-overflow-scrolling:touch; }
+body.whizz .table-wrap { max-width:100% !important; overflow:hidden !important; }
+body.whizz .main { min-width:0 !important; max-width:100% !important; overflow-x:hidden !important; }
+
+/* ==========================================================================
+   13. LOGIN — compact, centred, silver/metallic. Mobile-style card on every
+       breakpoint (the card never widens into a two-column desktop layout).
+   ========================================================================== */
+body.whizz-login{
+  min-height:100dvh; margin:0; display:block;
+  color:var(--wz-text);
+  /* restrained brushed-silver field: two soft light pools + a fine vertical
+     grain. No saturated colour, no heavy gradient. */
+  background:
+    radial-gradient(900px 440px at 50% -10%, rgba(255,255,255,.85) 0%, rgba(255,255,255,0) 60%),
+    radial-gradient(700px 380px at 50% 110%, rgba(255,255,255,.65) 0%, rgba(255,255,255,0) 58%),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.40) 0 2px, rgba(0,0,0,0) 2px 5px),
+    linear-gradient(180deg, #E6EAEF 0%, #D8DDE4 34%, #CFD5DD 62%, #DFE3E9 100%)
+    !important;
+  background-attachment:fixed !important;
+}
+body.whizz-login .wz-login-shell{
+  min-height:100dvh;
+  display:flex; align-items:center; justify-content:center;
+  padding:32px 18px;
+  box-sizing:border-box;
+}
+body.whizz-login .wz-login-card{
+  width:100%; max-width:390px;            /* compact even on 4K */
+  box-sizing:border-box;
+  background:#FFFFFF;
+  border:1px solid var(--wz-line);
+  border-radius:14px;
+  padding:34px 30px 26px;
+  box-shadow:0 1px 2px rgba(16,32,52,.05), 0 12px 34px rgba(16,32,52,.10), 0 30px 70px rgba(16,32,52,.06);
+  animation:wzFade .34s var(--wz-ease) both;
+}
+
+/* --- logo: the single focal point, centred --- */
+body.whizz-login .wz-login-logo{ display:flex; justify-content:center; margin-bottom:22px; }
+body.whizz-login .wz-login-logo img{
+  width:auto; height:56px; max-width:100%;
+  object-fit:contain; display:block;
+  /* dark lockup on the light metallic card — correct variant for this bg */
+}
+body.whizz-login .wz-login-head{ text-align:center; margin-bottom:24px; }
+body.whizz-login .wz-login-head h2{
+  margin:0 0 6px; font-size:18px; font-weight:650; letter-spacing:-.01em; color:var(--wz-text);
+}
+body.whizz-login .wz-login-head p{ margin:0; font-size:13px; color:var(--wz-text-3); }
+
+/* --- fields --- */
+body.whizz-login .field{ margin-bottom:15px; }
+body.whizz-login .field label{
+  display:block; margin-bottom:6px;
+  font-size:12px; font-weight:600; color:var(--wz-text-2); letter-spacing:.01em;
+}
+body.whizz-login .input-wrap{ position:relative; display:flex; align-items:center; }
+body.whizz-login .input-wrap > svg{
+  position:absolute; left:11px; width:16px; height:16px;
+  color:var(--wz-text-3); pointer-events:none; flex:none;
+}
+body.whizz-login .input-wrap input{
+  width:100%; box-sizing:border-box;
+  padding:11px 12px 11px 35px;
+  background:#FFF !important; color:var(--wz-text) !important;
+  border:1px solid var(--wz-line-2) !important; border-radius:8px !important;
+  font-size:14px; line-height:1.2;
+  transition:border-color .16s ease, box-shadow .16s ease;
+}
+body.whizz-login .input-wrap input:hover{ border-color:var(--wz-line) !important; }
+body.whizz-login .input-wrap input:focus{
+  outline:none !important;
+  border-color:var(--wz-blue) !important;
+  box-shadow:0 0 0 3px rgba(31,111,168,.13) !important;
+}
+body.whizz-login .input-wrap input::placeholder{ color:#9AA7B5; }
+body.whizz-login .pass-input{ padding-right:58px !important; }
+body.whizz-login .toggle-pass{
+  position:absolute; right:7px;
+  background:transparent; border:0; cursor:pointer;
+  font-size:12px; font-weight:600; color:var(--wz-blue);
+  padding:5px 7px; border-radius:5px;
+}
+body.whizz-login .toggle-pass:hover{ background:var(--wz-blue-soft); }
+
+/* --- captcha --- */
+body.whizz-login .captcha-row{ display:grid; grid-template-columns:118px 1fr; gap:9px; }
+body.whizz-login .captcha-box{
+  display:flex !important; align-items:center !important; justify-content:space-between !important; gap:6px !important;
+  padding:0 8px 0 12px !important; height:42px !important;
+  background:linear-gradient(180deg,#F7F9FA,#EDF0F3) !important;
+  border:1px solid var(--wz-line-2) !important; border-radius:8px !important;
+  font-weight:650 !important; font-size:15px !important; color:var(--wz-text) !important;
+  font-variant-numeric:tabular-nums !important; user-select:none;
+}
+body.whizz-login .refresh-btn{
+  background:transparent; border:0; cursor:pointer;
+  color:var(--wz-blue); font-size:15px; line-height:1;
+  padding:5px; border-radius:5px;
+}
+body.whizz-login .refresh-btn:hover{ background:var(--wz-blue-soft); }
+
+/* --- row + submit --- */
+body.whizz-login .row-between{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  margin:4px 0 18px; font-size:12.5px;
+}
+body.whizz-login .checkbox{
+  display:flex; align-items:center; gap:7px; color:var(--wz-text-2); cursor:pointer; margin:0;
+}
+body.whizz-login .checkbox input{ accent-color:var(--wz-blue); width:14px; height:14px; margin:0; }
+body.whizz-login .row-between a{ color:var(--wz-blue); text-decoration:none; font-weight:550; }
+body.whizz-login .row-between a:hover{ text-decoration:underline; }
+body.whizz-login form .btn{
+  width:100%; padding:12px 16px;
+  background:var(--wz-blue) !important; color:#FFF !important;
+  border:0 !important; border-radius:8px !important;
+  font-size:14px; font-weight:650; letter-spacing:.01em; cursor:pointer;
+  box-shadow:0 1px 2px rgba(21,85,127,.22);
+  transition:background-color .16s ease, box-shadow .16s ease, transform .1s ease;
+}
+body.whizz-login form .btn:hover{ background:var(--wz-blue-dk) !important; box-shadow:0 3px 10px rgba(21,85,127,.26); }
+body.whizz-login form .btn:active{ transform:translateY(1px); }
+body.whizz-login form .btn:focus-visible{ outline:2px solid var(--wz-blue); outline-offset:2px; }
+
+/* --- status message (JS sets .msg.show.error / .msg.show.success) --- */
+body.whizz-login .msg{
+  display:none; margin-top:13px; padding:9px 12px;
+  border-radius:7px; font-size:12.5px; line-height:1.45; text-align:center;
+}
+body.whizz-login .msg.show{ display:block; animation:wzFade .2s var(--wz-ease) both; }
+body.whizz-login .msg.error{ background:#FDECEA; color:#A33B38; border:1px solid #F3C8C6; }
+body.whizz-login .msg.success{ background:#EAF4EC; color:#3C7A42; border:1px solid #C7E2CB; }
+
+body.whizz-login .footer{
+  margin-top:22px; padding-top:16px;
+  border-top:1px solid var(--wz-line-2);
+  text-align:center; font-size:11.5px; color:var(--wz-text-3);
+}
+
+/* --- responsive: stays compact, only padding relaxes --- */
+@media (max-width:420px){
+  body.whizz-login .wz-login-shell{ padding:18px 14px; }
+  body.whizz-login .wz-login-card{ padding:28px 20px 22px; border-radius:12px; }
+  body.whizz-login .wz-login-logo img{ height:46px; }
+  body.whizz-login .captcha-row{ grid-template-columns:104px 1fr; }
+}
+@media (max-height:620px){
+  body.whizz-login .wz-login-shell{ align-items:flex-start; padding-top:24px; padding-bottom:24px; }
+}
+
+/* ==========================================================================
+   14. LEGAL / ACCEPTABLE-USE GATE (#gxLegalGate, injected by api.js)
+       api.js builds this with inline dark styles and is shared with panels
+       that are NOT in this redesign. Scoping to body.whizz re-skins it for
+       the WHIZZ panels only and leaves every other page exactly as it was.
+       Opacity/pointer-events are deliberately NOT overridden — the script
+       drives those to show the disabled state of the Accept button.
+   ========================================================================== */
+body.whizz #gxLegalGate{
+  background:rgba(16,32,52,.52) !important;
+  backdrop-filter:blur(3px) !important; -webkit-backdrop-filter:blur(3px) !important;
+}
+body.whizz #gxLegalGate > div{
+  background:#FFFFFF !important;
+  color:var(--wz-text) !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:12px !important;
+  box-shadow:0 20px 60px rgba(16,32,52,.26) !important;
+  animation:wzFade .24s var(--wz-ease) both;
+}
+body.whizz #gxLegalGate h2{
+  color:var(--wz-text) !important; font-weight:650 !important; font-size:17px !important;
+}
+body.whizz #gxLegalGate p{ color:var(--wz-text-2) !important; }
+body.whizz #gxLegalGate p b{ color:var(--wz-text) !important; }
+body.whizz #gxLegalGate label{
+  color:var(--wz-text) !important;
+  background:var(--wz-bg) !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:8px !important;
+}
+body.whizz #gxLegalGate input[type="checkbox"]{ accent-color:var(--wz-blue) !important; }
+body.whizz #gxLegalGate button{
+  background:var(--wz-blue) !important;
+  color:#FFFFFF !important;
+  border:0 !important; border-radius:8px !important;
+  font-weight:650 !important;
+  box-shadow:0 1px 2px rgba(21,85,127,.22) !important;
+}
+body.whizz #gxLegalGate #gxLegalErr{ color:var(--wz-red) !important; }
+
+/* ==========================================================================
+   15. LEGACY METRIC CARDS — de-saturate
+       galaxy.css paints .stat-card.dash-metric with 8 rotating full-bleed
+       gradients (and nth-child variants) at specificity (0,4,0)!important.
+       These selectors sit one step above that so the WHIZZ palette wins:
+       white card, one thin colour accent, dark numerals. Reference-accurate
+       and consistent with the "minimal colouring" brief.
+   ========================================================================== */
+body.whizz .stat-card.dash-metric,
+body.whizz .stats-grid .stat-card.dash-metric,
+body.whizz .gx-dash-grid .stat-card.dash-metric,
+body.whizz .dash-metrics .stat-card.dash-metric,
+body.whizz .stat-card.dash-metric[class*="d-"],
+body.whizz .gx-pay-chip {
+  background:var(--wz-card) !important;
+  background-image:none !important;
+  border:1px solid var(--wz-line) !important;
+  border-left:3px solid var(--wz-blue) !important;
+  border-radius:var(--wz-r) !important;
+  box-shadow:var(--wz-shadow) !important;
+  color:var(--wz-text) !important;
+  overflow:hidden !important;
+  position:relative !important;
+}
+/* one restrained accent per semantic colour */
+body.whizz .stat-card.dash-metric.d-blue,
+body.whizz .stats-grid .stat-card.dash-metric.d-blue   { border-left-color:var(--wz-blue) !important; }
+body.whizz .stat-card.dash-metric.d-green,
+body.whizz .stats-grid .stat-card.dash-metric.d-green  { border-left-color:var(--wz-green) !important; }
+body.whizz .stat-card.dash-metric.d-orange,
+body.whizz .stats-grid .stat-card.dash-metric.d-orange { border-left-color:var(--wz-orange) !important; }
+body.whizz .stat-card.dash-metric.d-pink,
+body.whizz .stats-grid .stat-card.dash-metric.d-pink   { border-left-color:#B07FB0 !important; }
+
+body.whizz .stat-card.dash-metric::before,
+body.whizz .stat-card.dash-metric::after,
+body.whizz .gx-pay-chip::before,
+body.whizz .gx-pay-chip::after { display:none !important; content:none !important; }
+
+/* text inside them */
+body.whizz .stat-card.dash-metric .stat-info p,
+body.whizz .gx-pay-chip .stat-info p,
+body.whizz .stat-card.dash-metric > p {
+  color:var(--wz-muted) !important; font-weight:600 !important;
+  font-size:11px !important; text-transform:uppercase !important; letter-spacing:.06em !important;
+}
+body.whizz .stat-card.dash-metric .stat-info h3,
+body.whizz .gx-pay-chip .stat-info h3,
+body.whizz .stat-card.dash-metric h3,
+body.whizz .gx-pay-chip h3 {
+  color:var(--wz-text) !important; font-weight:700 !important; font-size:23px !important;
+}
+body.whizz .stat-card.dash-metric .stat-info span,
+body.whizz .gx-pay-chip .stat-info span,
+body.whizz .stat-card.dash-metric > span {
+  color:var(--wz-text-3) !important; font-size:11.5px !important;
+}
+/* the round glyph badge on each card */
+body.whizz .stat-card.dash-metric .dash-go,
+body.whizz .stat-card.dash-metric .stat-ic,
+body.whizz .gx-pay-chip .dash-go {
+  background:var(--wz-blue-soft) !important;
+  color:var(--wz-blue) !important;
+  border:1px solid var(--wz-blue-line) !important;
+  box-shadow:none !important;
+}
+body.whizz .stat-card.dash-metric .dash-go svg,
+body.whizz .gx-pay-chip .dash-go svg { stroke:var(--wz-blue) !important; fill:none !important; }
+
+/* .gx-pay-chip uses its own .t/.v/.s children (white text, built for the old
+   gradient fill). Recolour them for the flat white card. */
+body.whizz .gx-pay-chip .t {
+  color:var(--wz-muted) !important; font-weight:600 !important;
+  font-size:11px !important; text-transform:uppercase !important; letter-spacing:.06em !important;
+}
+body.whizz .gx-pay-chip .v {
+  color:var(--wz-text) !important; font-weight:700 !important; font-size:23px !important;
+}
+body.whizz .gx-pay-chip .s { color:var(--wz-text-3) !important; font-size:11.5px !important; }
+
+/* ==========================================================================
+   16. CLIENT WELCOME OVERLAY
+       Pre-existing defect: `.welcome-step b:first-child` was meant for the
+       step number, but the inline <b>SMS Numbers</b> is also the first child
+       of its own <span>, so it was rendered as a clipped 24px circle. Restrict
+       the badge to the direct child and let inline emphasis be plain bold.
+   ========================================================================== */
+body.whizz .welcome-step {
+  background:var(--wz-bg) !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:var(--wz-r) !important;
+  color:var(--wz-text) !important;
+}
+body.whizz .welcome-step > b:first-child {
+  width:22px !important; height:22px !important; flex:0 0 22px !important;
+  background:var(--wz-blue) !important; background-image:none !important;
+  color:#FFFFFF !important; font-size:11.5px !important; border-radius:50% !important;
+}
+body.whizz .welcome-step span b,
+body.whizz .welcome-step span b:first-child {
+  display:inline !important;
+  width:auto !important; height:auto !important; flex:none !important;
+  background:none !important; background-image:none !important;
+  color:var(--wz-blue) !important;
+  border-radius:0 !important; padding:0 !important;
+  font-size:inherit !important; font-weight:650 !important;
+  place-items:normal !important;
+}
+body.whizz .client-welcome-overlay { background:rgba(16,32,52,.52) !important; }
+body.whizz .client-welcome-card {
+  background:#FFFFFF !important;
+  border:1px solid var(--wz-line) !important;
+  border-radius:12px !important;
+  box-shadow:0 20px 60px rgba(16,32,52,.26) !important;
+  color:var(--wz-text) !important;
+}
+body.whizz .client-welcome-card h3 { color:var(--wz-text) !important; font-weight:650 !important; }
+body.whizz .client-welcome-card > p { color:var(--wz-text-2) !important; }
+
+/* ==========================================================================
+   17. THEME TOGGLE BUTTON + COUNTRY MAP
+   ========================================================================== */
+/* galaxy.js appends .gx-theme-btn to the topbar. Agent/Admin/Manager topbars
+   are flex rows so it lands correctly; the Client topbar is a block element
+   wrapping .tb1, so the button overflowed BELOW the bar. Pin it only in that
+   case (the sibling combinator matches nowhere else). */
+body.whizz .topbar { position:relative !important; }
+body.whizz .tb1 ~ .gx-theme-btn {
+  position:absolute !important; right:12px !important; top:50% !important;
+  transform:translateY(-50%) !important; margin:0 !important;
+}
+/* reserve the space the pinned button now occupies so it cannot sit on top
+   of the logout button at the end of the row */
+body.whizz .tb1 { padding-right:50px !important; box-sizing:border-box !important; }
+body.whizz .gx-theme-btn {
+  width:32px !important; height:32px !important;
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  background:rgba(255,255,255,.14) !important;
+  color:#FFFFFF !important;
+  border:1px solid rgba(255,255,255,.22) !important;
+  border-radius:var(--wz-r) !important;
+  box-shadow:none !important;
+  transition:background-color .16s ease !important;
+}
+body.whizz .gx-theme-btn:hover { background:rgba(255,255,255,.24) !important; }
+body.whizz .gx-theme-btn svg { width:16px; height:16px; stroke:currentColor !important; }
+
+/* ==========================================================================
+   18. FLUID METRIC GRIDS
+       .gx-dash-grid was declared with fixed 210px columns, so on a 1024px
+       tablet (where the container is only ~724px wide) four columns
+       overflowed the viewport. Auto-fit keeps the same visual rhythm and
+       reflows instead of overflowing.
+   ========================================================================== */
+body.whizz .gx-dash-grid,
+body.whizz .dash-metrics,
+body.whizz .stats-grid {
+  display:grid !important;
+  grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)) !important;
+  gap:14px !important;
+  width:100% !important;
+  min-width:0 !important;
+}
+@media (max-width:520px){
+  body.whizz .gx-dash-grid,
+  body.whizz .dash-metrics,
+  body.whizz .stats-grid { grid-template-columns:1fr !important; }
+}
+body.whizz .gx-dash-grid > *,
+body.whizz .dash-metrics > *,
+body.whizz .stats-grid > * { min-width:0 !important; }
+
+/* ==========================================================================
+   19. MANAGER-SHELL + SHARED LEAFTOVERS
+   ========================================================================== */
+/* manager's top-level nav uses .navtab (not .ritem/.nav-item) */
+body.whizz .navtab,
+body.whizz .navtab span,
+body.whizz .navtabs .navtab { text-transform:none !important; letter-spacing:0 !important; }
+
+/* the legacy dark theme painted the logo IMG itself with a navy plate, a cyan
+   border and a glow — it framed the transparent WHIZZ mark in a dark box */
+body.whizz .powerx-logo-img,
+body.whizz .whizz-logo-img,
+body.whizz .logo img,
+body.whizz .brand img,
+body.whizz .sb-logo img,
+body.whizz .rail .logo img {
+  background:transparent !important;
+  background-image:none !important;
+  border:0 !important;
+  box-shadow:none !important;
+  border-radius:0 !important;
+  padding:0 !important;
+  filter:none !important;
+  object-fit:contain !important;
+}
+
+/* manager renders <div class="dash-go"></div> with no glyph, which showed as
+   an empty circle once the cards went white. Hide the empty ones only. */
+body.whizz .dash-go:empty { display:none !important; }
+
+/* ==========================================================================
+   WHIZZ Phase 2 — module panels (Panel Sharing / Payment / Test)
+   These compact panels use `.side` for the sidebar and dotted button
+   variants (`.btn.red`, `.btn.green`). Same WHIZZ design language:
+   navy sidebar, white content, blue primary UI.
+   ========================================================================== */
+body.whizz .side {
+  background:linear-gradient(180deg,var(--wz-nav) 0%,var(--wz-nav-2) 100%) !important;
+  border-right:1px solid rgba(0,0,0,.14) !important;
+  color:var(--wz-nav-text) !important;
+}
+body.whizz .side .brand {
+  background:rgba(0,0,0,.16) !important;
+  border-bottom:1px solid var(--wz-nav-line) !important;
+}
+body.whizz .side .brand .muted { color:var(--wz-nav-dim) !important; }
+body.whizz .side .nav .item { color:var(--wz-nav-text) !important; }
+body.whizz .side .nav .item:hover { background:var(--wz-nav-hover) !important; color:#FFFFFF !important; }
+body.whizz .side .nav .item.active { background:var(--wz-nav-active) !important; color:#FFFFFF !important; }
+body.whizz .side .sec { color:var(--wz-nav-dim) !important; }
+
+/* dotted semantic button variants used by the module panels */
+body.whizz .btn.red { background:var(--wz-red) !important; color:#FFF !important; border:1px solid var(--wz-red-2) !important; }
+body.whizz .btn.red:hover { background:var(--wz-red-2) !important; }
+body.whizz .btn.green { background:var(--wz-green) !important; color:#FFF !important; border:1px solid var(--wz-green-2) !important; }
+body.whizz .btn.green:hover { background:var(--wz-green-2) !important; }
+
+/* ============================================================================
+   WHIZZ FINAL (Manager M3): menu dropdown readability fix.
+   Appended at file end so it wins the cascade over galaxy.css scoped overlay
+   styles and any inline galaxy theme JS color forcing. Theme-scoped only. */
+body.whizz .dropmenu,
+body.whizz .dropmenu.adjust,
+body.whizz .drop-menus .dropmenu {
+  background: #ffffff !important;
+  border: 1px solid rgb(13 40 84 / 20%) !important;
+  box-shadow: 0 18px 40px rgb(10 36 86 / .18) !important;
+}
+body.whizz .dropmenu .dropitem,
+body.whizz .dropmenu.adjust .dropitem,
+body.whizz .drop-menus .dropmenu .dropitem {
+  color: #12377e !important;
+  background: transparent !important;
+}
+body.whizz .dropmenu .dropitem:hover,
+body.whizz .dropmenu .dropitem:focus,
+body.whizz .dropmenu .dropitem.active {
+  background: rgb(10 36 86 / .06) !important;
+  color: #0a2553 !important;
+}
+body.whizz .dropmenu .dropitem span,
+body.whizz .dropmenu .dropitem .drop-text {
+  color: inherit !important;
+}

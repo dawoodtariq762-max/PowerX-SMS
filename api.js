@@ -3,7 +3,7 @@
  * Uses localStorage token, adds Authorization header, redirects on 401.
  */
 (function () {
-  const AUTH_KEYS = ['ms_token','ms_role','ms_user','ms_name'];
+  const AUTH_KEYS = ['ms_token','ms_role','ms_user','ms_name','gx_chat_unlock_token','gx_agent_sec_unlocked'];
   function clearAuthStorage(){
     try{ AUTH_KEYS.forEach(k=>{ sessionStorage.removeItem(k); localStorage.removeItem(k); }); }catch(e){}
   }
@@ -12,8 +12,8 @@
   const ROLE = () => STORE('ms_role');
 
   function guard(expectedRole) {
-    if (!TOKEN()) { location.href = '/panel-login'; return false; }
-    if (expectedRole && ROLE() !== expectedRole) { location.href = '/panel-login'; return false; }
+    if (!TOKEN()) { location.href = '/login'; return false; }
+    if (expectedRole && ROLE() !== expectedRole) { location.href = '/login'; return false; }
     return true;
   }
 
@@ -21,9 +21,11 @@
     const opt = { method, headers: { 'Content-Type': 'application/json' } };
     const t = TOKEN();
     if (t) opt.headers['Authorization'] = 'Bearer ' + t;
+    const unlock = sessionStorage.getItem('gx_chat_unlock_token') || localStorage.getItem('gx_chat_unlock_token');
+    if (unlock) opt.headers['X-Chat-Unlock-Token'] = unlock;
     if (body !== undefined) opt.body = JSON.stringify(body);
     const r = await fetch('/api' + path, opt);
-    if (r.status === 401) { clearAuthStorage(); location.href = '/panel-login'; throw new Error('Session expired'); }
+    if (r.status === 401) { clearAuthStorage(); location.href = '/login'; throw new Error('Session expired'); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
     return data;
@@ -31,11 +33,13 @@
 
   // PHASE-2: multipart upload helper (large CSV imports without JSON body)
   async function upload(path, formData) {
-    const opt = { method: 'POST', body: formData };
+    const opt = { method: 'POST', body: formData, headers: {} };
     const t = TOKEN();
     if (t) opt.headers['Authorization'] = 'Bearer ' + t;
+    const unlock = sessionStorage.getItem('gx_chat_unlock_token') || localStorage.getItem('gx_chat_unlock_token');
+    if (unlock) opt.headers['X-Chat-Unlock-Token'] = unlock;
     const r = await fetch('/api' + path, opt);
-    if (r.status === 401) { clearAuthStorage(); location.href = '/panel-login'; throw new Error('Session expired'); }
+    if (r.status === 401) { clearAuthStorage(); location.href = '/login'; throw new Error('Session expired'); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
     return data;
@@ -240,6 +244,42 @@
     });
   }
   window.drawServerPagination = window.drawServerPagination || drawServerPagination;
+
+  /* ===== P11: ROLE-BASED PAGE-SIZE OPTIONS =====
+     UI options per role (backend ROLE_PAGE_MAX independently enforces the real ceiling).
+     Previous options (recorded): static <option> lists in HTML (mostly 25..1000/All). */
+  /* WHIZZ FINAL G3: uniform Show Records list across ALL roles/pages —
+     25 / 50 / 100 / 500 / 1,000 / 5,000 / 10,000 / All (250 and the extra-large
+     admin values removed). Backend ROLE_PAGE_MAX still enforces per-role ceilings
+     server-side, so oversized choices are clamped safely. */
+  var GX_UNIFORM_PAGE_OPTIONS = ['25', '50', '100', '500', '1000', '5000', '10000', 'All'];
+  var GX_ROLE_PAGE_OPTIONS = {
+    client:  GX_UNIFORM_PAGE_OPTIONS,
+    test:    GX_UNIFORM_PAGE_OPTIONS,
+    agent:   GX_UNIFORM_PAGE_OPTIONS,
+    manager: GX_UNIFORM_PAGE_OPTIONS,
+    admin:   GX_UNIFORM_PAGE_OPTIONS
+  };
+  function gxApplyRolePageOptions() {
+    try {
+      var role = (localStorage.getItem('ms_role') || '').toLowerCase();
+      var opts = GX_ROLE_PAGE_OPTIONS[role];
+      if (!opts) return;
+      var want = '|' + opts.join('|') + '|';
+      document.querySelectorAll('select[id$="Len"]').forEach(function(sel) {
+        var curVals = '|' + Array.prototype.map.call(sel.options, function(o) { return o.value; }).join('|') + '|';
+        if (curVals === want) return; /* already correct — idempotent */
+        var cur = sel.value;
+        sel.innerHTML = opts.map(function(o) { return '<option value="' + o + '"' + (cur === o ? ' selected' : '') + '>' + o + '</option>'; }).join('');
+        if (opts.indexOf(cur) === -1) sel.value = '25';
+      });
+    } catch (e) { console.warn('role page options failed', e); }
+  }
+  window.gxApplyRolePageOptions = gxApplyRolePageOptions;
+  /* re-apply twice: immediately + delayed (panel late-renders can rewrite selects) */
+  gxApplyRolePageOptions();
+  setTimeout(gxApplyRolePageOptions, 1500);
+  document.addEventListener('DOMContentLoaded', function() { gxApplyRolePageOptions(); setTimeout(gxApplyRolePageOptions, 1500); });
   function paginateRows(key, rows, len, infoId, rerender) {
     rows = rows || [];
     const state = window.__pagerState || (window.__pagerState = {});
@@ -279,7 +319,7 @@
     if(location.pathname.startsWith('/management')) return '/management';
     if(location.pathname.startsWith('/payment')) return '/payment';
     if(location.pathname.startsWith('/panel-sharing')) return '/panel-sharing';
-    return {admin:'/admin',manager:'/manager',agent:'/agent',client:'/client',test:'/test'}[role] || '/panel-login';
+    return {admin:'/admin',manager:'/manager',agent:'/agent',client:'/client',test:'/test'}[role] || '/login';
   }
   function defaultPageForCurrentPanel(){ return location.pathname.startsWith('/management') ? 'rates' : 'dashboard'; }
   function pageUrl(page){ return basePathForRole() + '/' + encodeURIComponent(page || defaultPageForCurrentPanel()); }
@@ -352,16 +392,19 @@
     setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},500);
   }
   function findExportTable(btn){
-    const page=btn.closest('.page') || document;
+    const page=btn.closest('.page') || btn.closest('main') || document;
     let wrap=btn.closest('.table-wrap');
     if(wrap){
       let n=wrap.nextElementSibling;
       while(n){ const t=n.querySelector&&n.querySelector('table'); if(t) return t; n=n.nextElementSibling; }
       const t=wrap.querySelector('table'); if(t) return t;
     }
-    const card=btn.closest('.card');
-    if(card){ const t=[...card.querySelectorAll('table')].find(x=>x.offsetParent!==null && x.querySelector('tbody')); if(t) return t; }
-    const tables=[...page.querySelectorAll('table')].filter(t=>t.offsetParent!==null && t.querySelector('tbody'));
+    const card=btn.closest('.card') || btn.closest('.two-col') || btn.closest('section');
+    if(card){
+      const t=[...card.querySelectorAll('table')].find(x=>(x.offsetParent!==null || !document.body.offsetParent) && x.querySelector('tbody'));
+      if(t) return t;
+    }
+    const tables=[...page.querySelectorAll('table')].filter(t=>(t.offsetParent!==null || !document.body.offsetParent) && t.querySelector('tbody'));
     return tables[0] || page.querySelector('table');
   }
   function exportTable(btn, mode){
@@ -425,10 +468,20 @@
     }catch(e){}
   }
   function exportModeFromButton(btn){
-    const label=(btn.textContent||btn.value||'').toLowerCase();
+    if(!btn) return '';
+    const label=[
+      btn.getAttribute('data-mode'),
+      btn.getAttribute('data-tip'),
+      btn.getAttribute('title'),
+      btn.getAttribute('aria-label'),
+      btn.textContent,
+      btn.value,
+      btn.className
+    ].filter(Boolean).join(' ').toLowerCase();
+
     if(label.includes('copy')) return 'copy';
     if(label.includes('csv')) return 'csv';
-    if(label.includes('excel')) return 'excel';
+    if(label.includes('excel') || label.includes('xls')) return 'excel';
     if(label.includes('pdf')) return 'pdf';
     if(label.includes('print')) return 'print';
     return '';
@@ -436,7 +489,14 @@
   function removePdfPrintButtons(root=document){
     const scope = root && root.querySelectorAll ? root : document;
     scope.querySelectorAll('.exp-btns button').forEach(btn=>{
-      const label=(btn.textContent||'').trim().toLowerCase();
+      const label=[
+        btn.getAttribute('data-mode'),
+        btn.getAttribute('data-tip'),
+        btn.getAttribute('title'),
+        btn.getAttribute('aria-label'),
+        btn.textContent,
+        btn.value
+      ].filter(Boolean).join(' ').trim().toLowerCase();
       if(label==='pdf' || label==='print') btn.remove();
     });
   }
@@ -446,10 +506,13 @@
       if(btn.dataset.msExportBound) return;
       btn.dataset.msExportBound='1';
       btn.type='button';
+      if(btn.getAttribute('onclick')) return; // allow custom onclick handler
       btn.addEventListener('click',(e)=>{
-        e.preventDefault(); e.stopPropagation();
         const mode=exportModeFromButton(btn);
-        if(mode) exportTable(btn,mode);
+        if(mode) {
+          e.preventDefault(); e.stopPropagation();
+          exportTable(btn,mode);
+        }
       });
     });
   }
@@ -459,9 +522,12 @@
     mo.observe(document.body,{childList:true,subtree:true});
     document.addEventListener('click',(e)=>{
       const btn=e.target.closest('.exp-btns button'); if(!btn) return;
-      e.preventDefault(); e.stopPropagation();
+      if(btn.getAttribute('onclick')) return; // allow custom inline handlers like exportNumbersCsv()
       const mode=exportModeFromButton(btn);
-      if(mode) exportTable(btn,mode);
+      if(mode) {
+        e.preventDefault(); e.stopPropagation();
+        exportTable(btn,mode);
+      }
     }, true);
   }
   function initActionFeedback(){
@@ -602,8 +668,41 @@
     settingsBtns.forEach(b=>{b.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();openSettings();});});
     document.querySelectorAll('.avatar,.who').forEach(a=>a.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();openProfileMenu();}));
     document.querySelectorAll('[title="Fullscreen"]').forEach(b=>{if(!b.dataset.msFull){b.dataset.msFull='1';b.addEventListener('click',(e)=>{if(!document.fullscreenElement){document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();}else{document.exitFullscreen&&document.exitFullscreen();}});}});
-    document.querySelectorAll('[title="Logout"]').forEach(b=>{if(!b.dataset.msLogout){b.dataset.msLogout='1';b.addEventListener('click',()=>{window.API&&API.logout?API.logout():(clearAuthStorage(),location.href='/panel-login');});}});
+    document.querySelectorAll('[title="Logout"]').forEach(b=>{if(!b.dataset.msLogout){b.dataset.msLogout='1';/* GX fix: button ka apna confirm-wala logout() ho to doosra auto-logout handler NAHI lagana (warna Cancel par bhi logout ho jata tha) */const own=b.getAttribute('onclick')&&/logout\s*\(/i.test(b.getAttribute('onclick'));if(!own){b.addEventListener('click',()=>{window.API&&API.logout?API.logout():(clearAuthStorage(),location.href='/login');});}}});
   }
+  /* ===== P18: Legal / Acceptable-Use gate (sab panels, logged-in users) ===== */
+  async function gxLegalGate(){
+    try{
+      if(!TOKEN()) return;
+      if(/^\/(panel-)?login/.test(location.pathname||'')) return;
+      const st = await req('GET','/legal/status');
+      if(!st.required) return;
+      const ov=document.createElement('div');
+      ov.id='gxLegalGate';
+      ov.setAttribute('role','dialog'); ov.setAttribute('aria-modal','true');
+      ov.style.cssText='position:fixed;inset:0;z-index:2147483000;background:rgba(5,7,12,.82);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);display:flex;align-items:center;justify-content:center;padding:14px;';
+      ov.innerHTML = '<div style="background:#14161d;color:#eef1f7;max-width:620px;width:100%;max-height:94vh;overflow:auto;border-radius:18px;border:1px solid rgba(190,195,205,.22);box-shadow:0 30px 90px rgba(0,0,0,.6);padding:24px 22px;font-family:inherit">'
+        + '<h2 style="margin:0 0 4px;font-size:19px;line-height:1.3">WHIZZ &mdash; Legal Use &amp; Acceptable Use</h2>'
+        + '<p style="margin:12px 0;color:#c9ccd2;font-size:13.5px;line-height:1.65"><b style="color:#eef1f7">About WHIZZ:</b> WHIZZ is an SMS management platform where authorized users can manage numbers, SMS activity, reports, allocations and related services.</p>'
+        + '<p style="margin:10px 0;color:#c9ccd2;font-size:13.5px;line-height:1.65">By continuing, you confirm that you will use the numbers and SMS services provided through WHIZZ only for lawful and legitimate purposes.</p>'
+        + '<p style="margin:10px 0;color:#c9ccd2;font-size:13.5px;line-height:1.65">You must not use these numbers for fake accounts, fraud, scams, abuse, spam, impersonation, unauthorized access, or any other illegal activity. You are responsible for ensuring that your use complies with applicable laws and the rules of the services you use.</p>'
+        + '<p style="margin:10px 0 14px;color:#c9ccd2;font-size:13.5px;line-height:1.65">By clicking Accept, you agree to these terms.</p>'
+        + '<label style="display:flex;gap:10px;align-items:flex-start;font-size:13.5px;color:#eef1f7;cursor:pointer;padding:11px;border:1px solid rgba(190,195,205,.28);border-radius:12px"><input type="checkbox" id="gxLegalChk" style="width:18px;height:18px;accent-color:#30ABED;margin-top:1px;flex:none"><span>I agree to use WHIZZ services only for lawful and legitimate purposes.</span></label>'
+        + '<div style="display:flex;justify-content:flex-end;margin-top:16px"><button id="gxLegalBtn" disabled style="opacity:.45;pointer-events:none;background:linear-gradient(96deg,#30ABED,#7F18B3);color:#fff;border:0;border-radius:12px;padding:11px 24px;font-weight:700;font-size:14px;cursor:pointer">Accept &amp; Continue</button></div>'
+        + '<div id="gxLegalErr" style="color:#ffb0bf;font-size:12.5px;margin-top:8px;display:none"></div>'
+        + '</div>';
+      document.body.appendChild(ov);
+      try{ document.body.style.overflow='hidden'; }catch(e){}
+      const chk=ov.querySelector('#gxLegalChk'), btn=ov.querySelector('#gxLegalBtn'), err=ov.querySelector('#gxLegalErr');
+      chk.addEventListener('change',()=>{ const on=chk.checked; btn.disabled=!on; btn.style.opacity=on?'1':'.45'; btn.style.pointerEvents=on?'auto':'none'; });
+      btn.addEventListener('click', async ()=>{
+        try{ await req('POST','/legal/accept',{version:st.version}); ov.remove(); try{ document.body.style.overflow=''; }catch(e){} }
+        catch(e){ err.style.display='block'; err.textContent='Accept failed: '+e.message; }
+      });
+    }catch(e){ /* gate must never break the panel */ }
+  }
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', gxLegalGate); } else { gxLegalGate(); }
+
   window.API = {
     guard,
     role: ROLE,
@@ -611,12 +710,22 @@
     name: () => STORE('ms_name'),
     ukDate: ukDateString,
     ukToday: () => ukDateString(new Date()),
+    /* P14: role-scoped distinct CLI list for report C-Level filters */
+    smsClis: async (a, b) => { try { const p = new URLSearchParams(); if (a && typeof a === 'object') { Object.entries(a).forEach(([k, v]) => { if (v) p.set(k, String(v)); }); } else { if (a) p.set('from', a); if (b) p.set('to', b); } const r = await API.get('/sms/clis' + (p.toString() ? '?' + p.toString() : '')); return { clis: r.clis || [], items: r.items || [], from: r.from, to: r.to }; } catch (e) { return { clis: [], items: [] }; } },
+    /* P18: role-scoped Number list for report datalist (same dataset as /sms/paged) */
+    smsNumbers: async (a, b) => { try { const p = new URLSearchParams(); if (a && typeof a === 'object') { Object.entries(a).forEach(([k, v]) => { if (v) p.set(k, String(v)); }); } else { if (a) p.set('from', a); if (b) p.set('to', b); } const r = await API.get('/sms/numbers' + (p.toString() ? '?' + p.toString() : '')); return { numbers: r.numbers || [], items: r.items || [], from: r.from, to: r.to }; } catch (e) { return { numbers: [], items: [] }; } },
+    /* P14: fires cb once when the UK report-day rolls over (60s check, no requests) */
+    onUkDayChange: (cb) => {
+      if (typeof cb !== 'function') return;
+      let last = ukDateString(new Date());
+      setInterval(() => { const now = ukDateString(new Date()); if (now !== last) { last = now; try { cb(now); } catch (_) {} } }, 60000);
+    },
     ukTimestamp: formatLocalFromDb,
     get: (p) => cachedGet(p),
     post: async (p, b) => { clearGetCache(); const data=await req('POST', p, b); if(data && data.background && data.job_id) return waitNumberJob(data.job_id, data); return data; },
     put: async (p, b) => { clearGetCache(); return req('PUT', p, b); },
     del: async (p) => { clearGetCache(); return req('DELETE', p); },
-    logout: async () => { try{ await req('POST','/logout',{}); }catch(e){} clearAuthStorage(); location.href = '/panel-login'; },
+    logout: async () => { try{ await req('POST','/logout',{}); }catch(e){} clearAuthStorage(); location.href = '/login'; },
     openSettings,
     openProfileMenu,
     paginateRows,
@@ -629,4 +738,5 @@
     mo.observe(document.body,{childList:true,subtree:true});
   }
   document.addEventListener('DOMContentLoaded', ()=>{ initExportButtons(); initActionFeedback(); initPanelHistory(); initIdleLogout(); initTopbarControls(); initRoutePersistence(); initTimeLocalization(); initLengthSelectObserver(); });
-})();
+
+  })();

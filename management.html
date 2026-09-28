@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="whizz">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<link rel="icon" type="image/png" href="/assets/powerx-favicon.png?v=px-1" />
-<title>POWER X SMS — Management Panel</title>
+<link rel="icon" type="image/png" href="/assets/whizz-favicon.png?v=wz-1" />
+<title>WHIZZ — Management Panel</title>
 <style id="route-auth-hide">html{visibility:hidden}
 
   /* ===== Section separators for clearer layout ===== */
@@ -23,12 +23,12 @@
   try{
     var token=sessionStorage.getItem('ms_token')||localStorage.getItem('ms_token');
     var role=sessionStorage.getItem('ms_role')||localStorage.getItem('ms_role');
-    if(!token || role!==expected){ location.replace('/panel-login'); return; }
+    if(!token || role!==expected){ location.replace('/login'); return; }
     fetch('/api/me',{headers:{Authorization:'Bearer '+token}})
       .then(function(r){ if(!r.ok) throw new Error('auth'); return r.json(); })
       .then(function(u){ if(!u || u.role!==expected) throw new Error('role'); document.documentElement.style.visibility='visible'; })
-      .catch(function(){ sessionStorage.clear(); ['ms_token','ms_role','ms_user','ms_name'].forEach(k=>localStorage.removeItem(k)); location.replace('/panel-login'); });
-  }catch(e){ sessionStorage.clear(); ['ms_token','ms_role','ms_user','ms_name'].forEach(k=>localStorage.removeItem(k)); location.replace('/panel-login'); }
+      .catch(function(){ sessionStorage.clear(); ['ms_token','ms_role','ms_user','ms_name'].forEach(k=>localStorage.removeItem(k)); location.replace('/login'); });
+  }catch(e){ sessionStorage.clear(); ['ms_token','ms_role','ms_user','ms_name'].forEach(k=>localStorage.removeItem(k)); location.replace('/login'); }
 })();
 </script>
 <style>
@@ -75,7 +75,7 @@
   .tb-btn:hover{background:var(--panel2);color:var(--text)}.tb-btn svg{width:19px;height:19px;stroke:currentColor}
   .tb-btn .badge{position:absolute;top:7px;right:8px;width:8px;height:8px;background:var(--green);border-radius:50%;border:2px solid var(--bg2)}
   .avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#475569,#334155);margin-left:6px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#cbd5e1;border:2px solid var(--border2)}
-  .content{padding:22px;flex:1}
+  .content{padding:22px;flex:0 0 auto}
   .page-head{margin-bottom:20px;display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px}
   .page-head h2{font-size:22px;font-weight:600}
   .breadcrumb{color:var(--muted);font-size:12.5px;margin-top:4px}.breadcrumb b{color:#a5b4fc;font-weight:500}
@@ -224,7 +224,7 @@
   .stat-card.dash-metric{border:0!important;border-radius:18px!important;min-height:92px!important;padding:16px 18px!important;display:flex!important;align-items:center!important;justify-content:space-between!important;box-shadow:0 16px 30px rgba(10,10,11,.12)!important;color:#fff!important;overflow:hidden!important;position:relative!important;transform:none!important}
   .stat-card.dash-metric::before{content:""!important;display:block!important;position:absolute!important;width:140px!important;height:140px!important;right:-58px!important;top:-62px!important;border-radius:50%!important;background:rgba(255,255,255,.18)!important}
   .stat-card.dash-metric::after{content:"";position:absolute;width:72px;height:72px;right:34px;bottom:-34px;border-radius:50%;background:rgba(255,255,255,.10)}
-  .stat-card.dash-metric .stat-info{position:relative;z-index:1}.stat-card.dash-metric .stat-info p{color:#fff!important;text-transform:uppercase!important;font-size:10.5px!important;font-weight:800!important;letter-spacing:.42px!important;margin:0 0 9px!important}.stat-card.dash-metric .stat-info h3{color:#fff!important;font-size:22px!important;font-weight:850!important;margin:0!important;letter-spacing:.2px}.stat-card.dash-metric .stat-info span{color:rgba(255,255,255,.88)!important;font-size:11px!important;display:block!important;margin-top:2px!important}.dash-go{width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.45);display:grid;place-items:center;color:#fff;font-size:12px;font-weight:900;position:relative;z-index:1}.dash-metric.d-blue{background:linear-gradient(135deg,#E8151A 0%,#FF4B4F 100%)!important}.dash-metric.d-pink{background:linear-gradient(135deg,#C01216 0%,#E8151A 100%)!important}.dash-metric.d-green{background:linear-gradient(135deg,#8A9099 0%,#C9CED6 100%)!important}.dash-metric.d-orange{background:linear-gradient(135deg,#FF4B4F 0%,#8A9099 100%)!important}.dash-note-card{padding:18px!important;border-radius:18px!important}.dash-note-card .card-head{margin-bottom:12px!important}.chart{background:#fff!important}.bar{background:linear-gradient(180deg,#38bdf8,#1d4ed8)!important;border-radius:9px 9px 0 0!important}.bar-col:nth-child(2n) .bar{background:linear-gradient(180deg,#ec4899,#7c3aed)!important}.bar-col:nth-child(3n) .bar{background:linear-gradient(180deg,#22c55e,#0f766e)!important}
+  .stat-card.dash-metric .stat-info{position:relative;z-index:1}.stat-card.dash-metric .stat-info p{color:#fff!important;text-transform:uppercase!important;font-size:10.5px!important;font-weight:800!important;letter-spacing:.42px!important;margin:0 0 9px!important}.stat-card.dash-metric .stat-info h3{color:#fff!important;font-size:22px!important;font-weight:850!important;margin:0!important;letter-spacing:.2px}.stat-card.dash-metric .stat-info span{color:rgba(255,255,255,.88)!important;font-size:11px!important;display:block!important;margin-top:2px!important}.dash-go{width:24px;height:24px;border-radius:50%;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.45);display:grid;place-items:center;color:#fff;font-size:12px;font-weight:900;position:relative;z-index:1}.dash-metric.d-blue{background:linear-gradient(135deg,#30ABED 0%,#9252DC 100%)!important}.dash-metric.d-pink{background:linear-gradient(135deg,#C01216 0%,#30ABED 100%)!important}.dash-metric.d-green{background:linear-gradient(135deg,#8A9099 0%,#8B93B8 100%)!important}.dash-metric.d-orange{background:linear-gradient(135deg,#9252DC 0%,#8A9099 100%)!important}.dash-note-card{padding:18px!important;border-radius:18px!important}.dash-note-card .card-head{margin-bottom:12px!important}.chart{background:#fff!important}.bar{background:linear-gradient(180deg,#38bdf8,#1d4ed8)!important;border-radius:9px 9px 0 0!important}.bar-col:nth-child(2n) .bar{background:linear-gradient(180deg,#ec4899,#7c3aed)!important}.bar-col:nth-child(3n) .bar{background:linear-gradient(180deg,#22c55e,#0f766e)!important}
 
 
 
@@ -330,7 +330,7 @@
 
 
 
-  /* ===== POWER X SMS branding polish ===== */
+  /* ===== WHIZZ SMS branding polish ===== */
   .sb-logo,.brand .logo,.rail .logo,.sb-brand .logo,.brand-logo .logo{background:linear-gradient(135deg,#2563EB,#06B6D4)!important;color:#fff!important;box-shadow:0 12px 26px rgba(37,99,235,.24)!important}
   .sb-logo svg,.brand .logo svg,.rail .logo svg,.sb-brand .logo svg,.brand-logo .logo svg{stroke:#fff!important;color:#fff!important}
   .sb-brand h1,.brand h1,.brand-text h1,.brand-logo h1{color:#1E293B!important;font-weight:700!important;letter-spacing:-.01em!important}
@@ -339,7 +339,7 @@
 
 
 
-  /* ===== Uploaded POWER X SMS logo ===== */
+  /* ===== Uploaded WHIZZ logo ===== */
   .powerx-logo-img{width:100%!important;height:100%!important;object-fit:cover!important;display:block!important;border-radius:inherit!important}
   .sb-logo,.brand .logo,.rail .logo,.sb-brand .logo,.brand-logo .logo{background:#050505!important;padding:0!important;overflow:hidden!important;border:1px solid rgba(245,158,11,.28)!important;box-shadow:0 12px 26px rgba(245,158,11,.18)!important}
   .brand-logo .logo{width:92px!important;height:92px!important;border-radius:22px!important;margin-bottom:16px!important}
@@ -373,20 +373,20 @@
 </style>
 
 
-<style id="powerx-theme">:root{--px-bg:#0A0A0B;--px-bg-2:#0F0F11;--px-surface:#141416;--px-surface-2:#1B1B1E;--px-surface-3:#232327;--px-rail:#08080A;--px-accent:#E8151A;--px-accent-2:#C9CED6;--px-accent-3:#8A9099;--px-accent-soft:rgba(232,21,26,.14);--px-accent-line:rgba(232,21,26,.34);--px-ok:#25D9A4;--px-warn:#FFB443;--px-danger:#FF5C7A;--px-info:#C9CED6;--px-text:#F2F3F5;--px-text-2:#C9CCD2;--px-muted:#93979E;--px-dim:#6B6F76;--px-border:rgba(190,195,205,.14);--px-border-2:rgba(190,195,205,.24);--px-radius:14px;--px-radius-lg:20px;--px-shadow:0 18px 50px rgba(0,0,0,.55);--px-shadow-sm:0 8px 24px rgba(0,0,0,.42);--px-glow:0 0 0 1px rgba(232,21,26,.30),0 14px 34px rgba(180,20,24,.24);--bg:#0A0A0B!important;--bg2:#0F0F11!important;--panel:#141416!important;--panel2:#1B1B1E!important;--row:#141416!important;--border:rgba(190,195,205,.14)!important;--border2:rgba(190,195,205,.24)!important;--text:#F2F3F5!important;--muted:#93979E!important;--sidebar:#08080A!important;--accent:#E8151A!important;--accent2:#C9CED6!important;--blue:#C9CED6!important;--green:#25D9A4!important;--amber:#FFB443!important;--red:#FF5C7A!important;--cyan:#E8151A!important}html{background:var(--px-bg)!important}body{background:#0A0A0B!important;color:var(--px-text)!important;font-family:'Inter','Plus Jakarta Sans','Segoe UI',Roboto,system-ui,-apple-system,sans-serif!important;font-size:14px!important;letter-spacing:.005em!important;-webkit-font-smoothing:antialiased}.main,.content{background:transparent!important;color:var(--px-text)!important}::selection{background:rgba(232,21,26,.28);color:#fff}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:var(--px-bg-2)}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#2A2A2E,#1C1C20);border-radius:8px;border:2px solid var(--px-bg-2)}::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#38383E,#242428)}*{scrollbar-color:#2A2A2E var(--px-bg-2);scrollbar-width:thin}.sidebar,.rail,.appbar{background:linear-gradient(185deg,#0B0B0D 0%,#08080A 46%,#050506 100%)!important;border-right:1px solid var(--px-border)!important;box-shadow:18px 0 60px rgba(0,0,0,.55)!important;color:var(--px-text-2)!important}.sidebar::after,.rail::after{content:""!important;display:block!important;position:absolute!important;top:0;right:0;bottom:0;width:1px;background:linear-gradient(180deg,transparent,rgba(232,21,26,.42) 22%,rgba(201,206,214,.32) 66%,transparent)!important;pointer-events:none!important}.appbar{border-right:0!important;border-bottom:1px solid var(--px-border)!important;box-shadow:0 14px 40px rgba(0,0,0,.5)!important}.sb-brand,.rail-brand,.brand-text,.appbar-top,.side .brand,.brand{background:transparent!important;border-bottom:1px solid var(--px-border)!important}.sb-brand h1,.brand h1,.brand-text h1,.brand-logo h1,.sidebar h1,.appbar h1,.brand b{color:#FFFFFF!important;font-weight:750!important;letter-spacing:-.012em!important;font-size:16.5px!important}.sb-brand h1 span,.brand-text h1 span{background:linear-gradient(96deg,var(--px-accent),#A50E12)!important;-webkit-background-clip:text!important;background-clip:text!important;-webkit-text-fill-color:transparent!important;color:transparent!important}.sb-brand small,.brand small,.brand-text small,.sidebar small,.appbar small,.brand .muted{color:var(--px-muted)!important;font-size:11px!important;font-weight:600!important;text-transform:uppercase!important;letter-spacing:.13em!important}.sb-logo,.brand .logo,.rail .logo,.sb-brand .logo,.brand-logo .logo,.logo,.brand img{background:#050506!important;padding:0!important;overflow:hidden!important;border:1px solid var(--px-accent-line)!important;box-shadow:0 10px 26px rgba(232,21,26,.16),inset 0 0 0 1px rgba(255,255,255,.04)!important}.powerx-logo-img,.logo img,.login-hero-logo,.brand img{filter:saturate(1.06) contrast(1.02)!important}.sb-section,.sb-sec,.sec{color:var(--px-dim)!important;font-weight:700!important;font-size:10px!important;letter-spacing:.16em!important;text-transform:uppercase!important;padding-left:2px!important}.nav-item,.sub-item,.tab,.ritem,.rsubitem,.navtab,.dropitem,.item{color:var(--px-text-2)!important;background:transparent!important;border-radius:11px!important;font-weight:550!important;position:relative!important}.nav-item svg,.sub-item svg,.tab svg,.ritem svg,.rsubitem svg,.navtab svg,.item svg{stroke:currentColor!important;color:inherit!important;opacity:.85!important}.nav-item:hover,.sub-item:hover,.tab:hover,.ritem:hover,.rsubitem:hover,.navtab:hover,.dropitem:hover,.item:hover{background:rgba(201,206,214,.09)!important;color:#FFFFFF!important}.nav-item:hover svg,.ritem:hover svg,.item:hover svg{opacity:1!important;stroke:var(--px-accent)!important}.nav-item.active,.tab.active,.ritem.active,.navtab.active,.item.active{background:linear-gradient(96deg,rgba(232,21,26,.20),rgba(201,206,214,.14))!important;color:#FFFFFF!important;box-shadow:inset 0 0 0 1px rgba(232,21,26,.34),0 10px 26px rgba(180,20,24,.18)!important}.nav-item.active::before,.ritem.active::before,.item.active::before{content:""!important;position:absolute!important;left:0;top:18%;bottom:18%;width:3px;border-radius:0 4px 4px 0;background:linear-gradient(180deg,var(--px-accent),#A50E12)!important;box-shadow:0 0 14px rgba(232,21,26,.7)!important}.nav-item.active svg,.tab.active svg,.ritem.active svg,.navtab.active svg,.item.active svg{stroke:var(--px-accent)!important;color:var(--px-accent)!important;opacity:1!important}.sub-item.active,.rsubitem.active,.dropitem.active{background:rgba(232,21,26,.10)!important;color:#FFFFFF!important;box-shadow:inset 2px 0 0 var(--px-accent)!important}.navtab.active{border-bottom-color:var(--px-accent)!important}.nav-item .chev,.ritem .chev{color:var(--px-dim)!important}.topbar,.tb1,.navshell,.mgr-topbar,.top{background:#0F0F11!important;border-bottom:1px solid var(--px-border)!important;box-shadow:0 8px 30px rgba(0,0,0,.40)!important;color:var(--px-text)!important}.topbar::before,.tb1::before,.navshell::before{display:none!important}.tb-btn,.hamburger,.mgr-topbar-menu,.icon-btn{color:var(--px-muted)!important;background:transparent!important;border-radius:10px!important}.tb-btn:hover,.hamburger:hover,.mgr-topbar-menu:hover{background:rgba(201,206,214,.12)!important;color:var(--px-accent)!important}.clock,.tb-date{background:rgba(27,27,30,.8)!important;color:var(--px-text-2)!important;border:1px solid var(--px-border)!important;border-radius:10px!important;font-variant-numeric:tabular-nums!important}.avatar,.av,.who .av{background:linear-gradient(135deg,#E8151A,#A50E12)!important;color:#FFFFFF!important;border:1px solid rgba(232,21,26,.42)!important;font-weight:800!important;box-shadow:0 8px 22px rgba(232,21,26,.22)!important}.who .nm,.who .t1,.who .pt{color:var(--px-text)!important}.who .ps,.who .t2{color:var(--px-muted)!important}.page-head{border-bottom:1px solid var(--px-border)!important;padding-bottom:15px!important}.page-head h2,.head h2{color:#FFFFFF!important;font-weight:700!important;letter-spacing:-.028em!important}.breadcrumb,.sub,.muted,.clock,.tb-date,.t2,.ps,.bar-label,.hint,.cell-sub,.info{color:var(--px-muted)!important}.page>.toolbar:not(:first-child)::before,.page>.table-wrap:not(:first-child)::before,.page>.card:not(:first-child)::before,.page>.grid2:not(:first-child)::before{background:var(--px-border)!important;opacity:1!important}.card,.toolbar,.table-wrap,.modal,.modal-box,.ms-modal,.box,.table,.dash-note-card{background:linear-gradient(180deg,#1B1B1E,#141416)!important;border:1px solid var(--px-border)!important;border-radius:var(--px-radius-lg)!important;box-shadow:var(--px-shadow-sm)!important;color:var(--px-text)!important}.card:hover,.table-wrap:hover{border-color:var(--px-border-2)!important}.card-head{border-bottom:1px solid var(--px-border)!important}.card-head h3,.card h3,.box h3{color:#FFFFFF!important;font-weight:680!important;letter-spacing:-.01em!important}.card-head .sub{color:var(--px-muted)!important}.grid2,.two-col,.stats-grid,.grid{background:transparent!important}.stats-grid,.dash-metrics{gap:18px!important}.stat-card{background:linear-gradient(180deg,rgba(27,27,30,.72),rgba(20,20,22,.92))!important;border:1px solid var(--px-border)!important;border-radius:18px!important}.stat-card.dash-metric,.metric{position:relative!important;overflow:hidden!important;border:1px solid var(--px-border-2)!important;border-radius:18px!important;background:linear-gradient(150deg,rgba(35,35,39,.92),rgba(13,13,15,.96))!important;box-shadow:0 16px 40px rgba(0,0,0,.48)!important;color:var(--px-text)!important;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease!important}.stat-card.dash-metric:hover{transform:translateY(-3px)!important;border-color:var(--px-accent-line)!important;box-shadow:0 24px 56px rgba(150,18,22,.26)!important}.stat-card.dash-metric::before{content:""!important;display:block!important;position:absolute!important;left:0!important;right:0!important;top:0!important;width:auto!important;height:2px!important;border-radius:0!important;background:linear-gradient(90deg,var(--px-accent),#FF4B4F,var(--px-accent-2))!important;opacity:.9!important}.stat-card.dash-metric::after{content:""!important;position:absolute!important;width:190px!important;height:190px!important;right:-72px!important;bottom:-96px!important;border-radius:50%!important;background:radial-gradient(circle,rgba(232,21,26,.16),transparent 68%)!important}.stat-card.dash-metric .stat-info p,.metric .muted{color:var(--px-muted)!important;text-transform:uppercase!important;font-size:10.5px!important;font-weight:700!important;letter-spacing:.14em!important}.stat-card.dash-metric .stat-info h3,.metric h3{color:#FFFFFF!important;font-weight:750!important;font-variant-numeric:tabular-nums!important;letter-spacing:-.02em!important}.stat-card.dash-metric .stat-info span{color:var(--px-text-2)!important}.dash-go{background:rgba(232,21,26,.12)!important;border:1px solid var(--px-accent-line)!important;color:var(--px-accent)!important}.dash-metric.d-blue::before{background:linear-gradient(90deg,#E8151A,#FF4B4F)!important}.dash-metric.d-blue::after{background:radial-gradient(circle,rgba(232,21,26,.18),transparent 68%)!important}.dash-metric.d-green::before{background:linear-gradient(90deg,#C9CED6,#8A9099)!important}.dash-metric.d-green::after{background:radial-gradient(circle,rgba(201,206,214,.16),transparent 68%)!important}.dash-metric.d-pink::before{background:linear-gradient(90deg,#E8151A,#C9CED6)!important}.dash-metric.d-pink::after{background:radial-gradient(circle,rgba(232,21,26,.14),transparent 68%)!important}.dash-metric.d-orange::before{background:linear-gradient(90deg,#FF4B4F,#8A9099)!important}.dash-metric.d-orange::after{background:radial-gradient(circle,rgba(201,206,214,.14),transparent 68%)!important}.dash-metric.d-blue,.dash-metric.d-green,.dash-metric.d-pink,.dash-metric.d-orange{background:linear-gradient(150deg,rgba(35,35,39,.92),rgba(13,13,15,.96))!important}.dash-note-card .card-head{border-bottom:1px solid var(--px-border)!important}.chart{background:linear-gradient(180deg,rgba(13,13,15,.55),transparent)!important;border-radius:14px!important;background-image:repeating-linear-gradient(to top,rgba(190,195,205,.07) 0 1px,transparent 1px 25%)!important}.bar{background:linear-gradient(180deg,#E8151A,#0E9E9A)!important;border-radius:8px 8px 3px 3px!important;box-shadow:0 0 18px rgba(232,21,26,.28)!important}.bar-col:nth-child(2n) .bar{background:linear-gradient(180deg,#C9CED6,#1663B8)!important;box-shadow:0 0 18px rgba(201,206,214,.26)!important}.bar-col:nth-child(3n) .bar{background:linear-gradient(180deg,#8A9099,#4B4FC4)!important;box-shadow:0 0 18px rgba(138,144,153,.24)!important}.bar:hover{filter:brightness(1.18)!important}.bar .val{color:var(--px-text)!important;font-weight:650!important;font-variant-numeric:tabular-nums!important}.bar-label{color:var(--px-muted)!important}.bar-track{border-bottom:1px solid var(--px-border)!important}table{background:transparent!important;border-collapse:separate!important;border-spacing:0!important}thead th{background:#080D17!important;color:var(--px-text-2)!important;font-weight:650!important;font-size:11px!important;text-transform:uppercase!important;letter-spacing:.10em!important;border-top:0!important;border-bottom:1px solid var(--px-border-2)!important;position:sticky!important;top:0!important;z-index:2!important}tbody tr td{background:transparent!important;color:var(--px-text)!important;border-bottom:1px solid rgba(190,195,205,.08)!important}tbody tr:nth-child(even) td{background:rgba(190,195,205,.022)!important}tbody tr:hover td{background:rgba(201,206,214,.075)!important;color:#FFFFFF!important}tbody tr:hover{transform:none!important}.table-wrap,.tscroll{border-color:var(--px-border)!important}.table-controls,.table-foot,.filter-row{background:transparent!important;color:var(--px-muted)!important;border-color:var(--px-border)!important}.table-controls label,.tc-right label,.tc-left label,.filter-row label{color:var(--px-text-2)!important;font-weight:600!important}.table-foot .info{color:var(--px-muted)!important}.pagination button{background:rgba(27,27,30,.85)!important;border:1px solid var(--px-border)!important;color:var(--px-text-2)!important;border-radius:9px!important}.pagination button:hover:not(.active){background:rgba(201,206,214,.14)!important;color:#FFFFFF!important;border-color:var(--px-border-2)!important}.pagination button.active{background:linear-gradient(96deg,var(--px-accent),#A50E12)!important;color:#FFFFFF!important;border-color:transparent!important;font-weight:750!important;box-shadow:0 8px 20px rgba(232,21,26,.26)!important}.mono{font-family:'JetBrains Mono','SFMono-Regular',Consolas,Menlo,monospace!important;color:var(--px-text)!important;letter-spacing:.02em!important}.cell-money{color:var(--px-ok)!important;font-weight:700!important;font-variant-numeric:tabular-nums!important}.payout-rate,.rate-cell,.money{color:var(--px-accent-2)!important;font-weight:700!important;font-variant-numeric:tabular-nums!important}.otp{color:var(--px-accent)!important;font-weight:750!important;letter-spacing:.08em!important}.msg-body{color:var(--px-text-2)!important}.check-ok{color:var(--px-ok)!important}.sortable,.sort{color:inherit!important}.btn,button.btn,.ms-btn{border-radius:11px!important;font-weight:650!important;letter-spacing:.005em!important;border:1px solid transparent!important;transition:transform .14s ease,box-shadow .16s ease,filter .16s ease,background-color .16s ease!important}.btn-blue,.btn-purple,.btn-teal,.btn-rose,.ms-btn.primary,button.btn-gold,.btn:not([class*="btn-"]){background:linear-gradient(96deg,#E8151A 0%,#A50E12 100%)!important;color:#FFFFFF!important;border:0!important;box-shadow:0 10px 26px rgba(200,25,30,.26)!important}.btn-green{background:linear-gradient(96deg,#25D9A4,#0FA97E)!important;color:#FFFFFF!important;border:0!important;box-shadow:0 10px 24px rgba(37,217,164,.22)!important}.btn-amber{background:linear-gradient(96deg,#FFB443,#F08A2E)!important;color:#1A1204!important;border:0!important;box-shadow:0 10px 24px rgba(255,180,67,.22)!important}.btn-red{background:linear-gradient(96deg,#FF5C7A,#E03457)!important;color:#FFF!important;border:0!important;box-shadow:0 10px 24px rgba(255,92,122,.24)!important}.btn-ghost,.ms-btn.ghost,.btn.ghost{background:rgba(27,27,30,.75)!important;color:var(--px-text-2)!important;border:1px solid var(--px-border-2)!important;box-shadow:none!important}.btn-ghost:hover,.btn.ghost:hover{background:rgba(201,206,214,.12)!important;color:#FFFFFF!important;border-color:var(--px-accent-line)!important}.btn:hover{transform:translateY(-1px)!important;filter:brightness(1.06)!important}.btn:active{transform:translateY(0)!important}.btn:focus-visible{outline:2px solid var(--px-accent)!important;outline-offset:2px!important}.icon-btn{border-radius:9px!important;color:#FFFFFF!important}.icon-btn svg{stroke:currentColor!important}input,select,textarea,.ms-field input{background:rgba(10,10,11,.82)!important;color:var(--px-text)!important;border:1px solid var(--px-border-2)!important;border-radius:11px!important;transition:border-color .15s ease,box-shadow .15s ease,background-color .15s ease!important}input::placeholder,textarea::placeholder{color:var(--px-dim)!important}input:hover,select:hover,textarea:hover{border-color:rgba(190,195,205,.34)!important}input:focus,select:focus,textarea:focus{border-color:var(--px-accent)!important;box-shadow:0 0 0 4px rgba(232,21,26,.14)!important;background:rgba(10,17,30,.95)!important;outline:none!important}select option{background:#141416!important;color:var(--px-text)!important}input[type="checkbox"],input[type="radio"]{accent-color:var(--px-accent)!important}.form-group label,.field label,label{color:var(--px-text-2)!important;font-weight:600!important}.form-group .hint,.hint{color:var(--px-dim)!important}.form-group label .req,.req{color:var(--px-danger)!important}.upload-box{background:rgba(10,10,11,.6)!important;border:2px dashed var(--px-border-2)!important;color:var(--px-muted)!important;border-radius:14px!important}.upload-box:hover{border-color:var(--px-accent)!important;color:var(--px-text)!important;background:rgba(232,21,26,.05)!important}.upload-box svg{stroke:var(--px-accent)!important}.upload-box b{color:var(--px-accent)!important}.tag,.tag-blue,.tag-green,.tag-amber,.tag-red,.tag-gray,.tag-mgr,.tag-agt,.tag-cli,.tag-client,.chip{border-radius:8px!important;font-weight:650!important;font-size:11.5px!important;letter-spacing:.02em!important;box-shadow:none!important;background:rgba(190,195,205,.10)!important;color:var(--px-text-2)!important;border:1px solid var(--px-border-2)!important}.tag-mgr{background:rgba(138,144,153,.16)!important;color:#B9C2FF!important;border:1px solid rgba(138,144,153,.38)!important}.tag-agt{background:rgba(232,21,26,.14)!important;color:#7DF0DA!important;border:1px solid rgba(232,21,26,.36)!important}.tag-cli,.tag-client{background:rgba(201,206,214,.14)!important;color:#9AD8FF!important;border:1px solid rgba(201,206,214,.36)!important}.tag-blue{background:rgba(201,206,214,.14)!important;color:#9AD8FF!important;border:1px solid rgba(201,206,214,.36)!important}.tag-green{background:rgba(37,217,164,.14)!important;color:#84EFC9!important;border:1px solid rgba(37,217,164,.36)!important}.tag-amber{background:rgba(255,180,67,.14)!important;color:#FFD79A!important;border:1px solid rgba(255,180,67,.36)!important}.tag-red{background:rgba(255,92,122,.14)!important;color:#FFB0BF!important;border:1px solid rgba(255,92,122,.36)!important}.tag-gray{background:rgba(190,195,205,.10)!important;color:var(--px-muted)!important;border:1px solid var(--px-border-2)!important}.tag .x{opacity:.6!important}.tag .x:hover{opacity:1!important;color:var(--px-danger)!important}.drill .dchip{background:rgba(27,27,30,.8)!important;border:1px solid var(--px-border-2)!important;color:var(--px-text-2)!important;border-radius:999px!important}.drill .dchip:hover{border-color:var(--px-accent)!important;color:#FFFFFF!important}.drill .dchip.active{background:linear-gradient(96deg,var(--px-accent),#A50E12)!important;color:#FFFFFF!important;border-color:transparent!important}.section-title{color:var(--px-accent)!important;font-weight:650!important}.dot{box-shadow:0 0 0 5px rgba(37,217,164,.16)!important}.modal-overlay{backdrop-filter:blur(4px)!important}.modal-overlay{background:rgba(3,7,15,.76)!important}.modal,.modal-box,.ms-modal,.box{background:linear-gradient(180deg,#1B1B1E,#121214)!important;border:1px solid var(--px-border-2)!important;border-radius:20px!important;box-shadow:0 34px 80px rgba(0,0,0,.72)!important}.modal-head,.ms-modal-head{border-bottom:1px solid var(--px-border)!important;background:transparent!important}.modal-head h3,.ms-modal-head h3{color:#FFFFFF!important}.modal-foot,.ms-modal-foot{border-top:1px solid var(--px-border)!important;background:transparent!important}.modal-close{color:var(--px-muted)!important}.modal-close:hover{color:var(--px-danger)!important}.overlay{background:rgba(3,7,15,.62)!important}.ms-notif-panel,.ms-profile-menu{background:linear-gradient(180deg,#1B1B1E,#121214)!important;border:1px solid var(--px-border-2)!important;color:var(--px-text)!important;box-shadow:0 26px 70px rgba(0,0,0,.7)!important;border-radius:16px!important}.ms-notif-head,.ms-notif-foot{background:rgba(10,10,11,.7)!important;border-color:var(--px-border)!important;color:var(--px-text)!important}.ms-notif-item{border-color:var(--px-border)!important;color:var(--px-text-2)!important}.ms-notif-item:hover,.ms-notif-item.unread,.ms-profile-item:hover{background:rgba(201,206,214,.10)!important}.ms-profile-item{color:var(--px-text)!important}.ms-toast{background:linear-gradient(96deg,#141416,#1E1E22)!important;border:1px solid var(--px-accent-line)!important;color:#FFFFFF!important;box-shadow:0 20px 50px rgba(180,20,24,.28)!important}.ms-progress{background:linear-gradient(90deg,#E8151A,#FF4B4F,#C9CED6)!important}.ms-working{box-shadow:0 0 0 4px rgba(232,21,26,.20)!important}.ms-switch{color:var(--px-text)!important}.ms-page-link-overlay:focus{outline-color:var(--px-accent)!important}@keyframes pxFade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}.page.active{animation:pxFade .26s cubic-bezier(.22,.9,.3,1) both!important}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}@media(max-width:900px){.sidebar,.rail,.appbar{box-shadow:24px 0 70px rgba(0,0,0,.7)!important}.content{background:transparent!important}.stat-card.dash-metric{border-radius:16px!important}}</style>
-</head>
-<body>
+<!-- WHIZZ DARK THEME: navy palette. Purana black variant REMOVE. galaxy.css iske UPAR load hota hai aur primary layer hai; ye fallback coverage deta hai. --><style id="galaxy-dark-theme">:root{--px-bg:#070D1F;--px-bg-2:#0A1126;--px-surface:#0D142C;--px-surface-2:#131C3E;--px-surface-3:#151A3A;--px-rail:#0A0F24;--px-accent:#30ABED;--px-accent-2:#8B93B8;--px-accent-3:#8B93B8;--px-accent-soft:rgba(48,171,237,.14);--px-accent-line:rgba(48,171,237,.34);--px-ok:#25D9A4;--px-warn:#FFB443;--px-danger:#FF5C7A;--px-info:#8B93B8;--px-text:#E7EAF8;--px-text-2:#C9CDE8;--px-muted:#8B93B8;--px-dim:#6A7295;--px-border:rgba(199,209,248,.14);--px-border-2:rgba(199,209,248,.24);--px-radius:14px;--px-radius-lg:20px;--px-shadow:0 18px 50px rgba(0,0,0,.55);--px-shadow-sm:0 8px 24px rgba(0,0,0,.42);--px-glow:0 0 0 1px rgba(48,171,237,.30),0 14px 34px rgba(146,82,220,.24);--bg:#070D1F!important;--bg2:#0A1126!important;--panel:#0D142C!important;--panel2:#131C3E!important;--row:#0D142C!important;--border:rgba(199,209,248,.14)!important;--border2:rgba(199,209,248,.24)!important;--text:#F2F3F5!important;--muted:#93979E!important;--sidebar:#0A0F24!important;--accent:#30ABED!important;--accent2:#8B93B8!important;--blue:#8B93B8!important;--green:#25D9A4!important;--amber:#FFB443!important;--red:#FF5C7A!important;--cyan:#30ABED!important}html{background:var(--px-bg)!important}body{background:#070D1F!important;color:var(--px-text)!important;font-family:'Inter','Plus Jakarta Sans','Segoe UI',Roboto,system-ui,-apple-system,sans-serif!important;font-size:14px!important;letter-spacing:.005em!important;-webkit-font-smoothing:antialiased}.main,.content{background:transparent!important;color:var(--px-text)!important}::selection{background:rgba(48,171,237,.28);color:#fff}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:var(--px-bg-2)}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#1D2350,#11152E);border-radius:8px;border:2px solid var(--px-bg-2)}::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#262C5A,#141938)}*{scrollbar-color:#1D2350 var(--px-bg-2);scrollbar-width:thin}.sidebar,.rail,.appbar{background:linear-gradient(185deg,#0B1226 0%,#0A0F24 46%,#080D1F 100%)!important;border-right:1px solid var(--px-border)!important;box-shadow:18px 0 60px rgba(0,0,0,.55)!important;color:var(--px-text-2)!important}.sidebar::after,.rail::after{content:""!important;display:block!important;position:absolute!important;top:0;right:0;bottom:0;width:1px;background:linear-gradient(180deg,transparent,rgba(48,171,237,.42) 22%,rgba(199,209,248,.32) 66%,transparent)!important;pointer-events:none!important}.appbar{border-right:0!important;border-bottom:1px solid var(--px-border)!important;box-shadow:0 14px 40px rgba(0,0,0,.5)!important}.sb-brand,.rail-brand,.brand-text,.appbar-top,.side .brand,.brand{background:transparent!important;border-bottom:1px solid var(--px-border)!important}.sb-brand h1,.brand h1,.brand-text h1,.brand-logo h1,.sidebar h1,.appbar h1,.brand b{color:#FFFFFF!important;font-weight:750!important;letter-spacing:-.012em!important;font-size:16.5px!important}.sb-brand h1 span,.brand-text h1 span{background:linear-gradient(96deg,var(--px-accent),#7F18B3)!important;-webkit-background-clip:text!important;background-clip:text!important;-webkit-text-fill-color:transparent!important;color:transparent!important}.sb-brand small,.brand small,.brand-text small,.sidebar small,.appbar small,.brand .muted{color:var(--px-muted)!important;font-size:11px!important;font-weight:600!important;text-transform:uppercase!important;letter-spacing:.13em!important}.sb-logo,.brand .logo,.rail .logo,.sb-brand .logo,.brand-logo .logo,.logo,.brand img{background:#080D1F!important;padding:0!important;overflow:hidden!important;border:1px solid var(--px-accent-line)!important;box-shadow:0 10px 26px rgba(48,171,237,.16),inset 0 0 0 1px rgba(255,255,255,.04)!important}.powerx-logo-img,.logo img,.login-hero-logo,.brand img{filter:saturate(1.06) contrast(1.02)!important}.sb-section,.sb-sec,.sec{color:var(--px-dim)!important;font-weight:700!important;font-size:10px!important;letter-spacing:.16em!important;text-transform:uppercase!important;padding-left:2px!important}.nav-item,.sub-item,.tab,.ritem,.rsubitem,.navtab,.dropitem,.item{color:var(--px-text-2)!important;background:transparent!important;border-radius:11px!important;font-weight:550!important;position:relative!important}.nav-item svg,.sub-item svg,.tab svg,.ritem svg,.rsubitem svg,.navtab svg,.item svg{stroke:currentColor!important;color:inherit!important;opacity:.85!important}.nav-item:hover,.sub-item:hover,.tab:hover,.ritem:hover,.rsubitem:hover,.navtab:hover,.dropitem:hover,.item:hover{background:rgba(199,209,248,.09)!important;color:#FFFFFF!important}.nav-item:hover svg,.ritem:hover svg,.item:hover svg{opacity:1!important;stroke:var(--px-accent)!important}.nav-item.active,.tab.active,.ritem.active,.navtab.active,.item.active{background:linear-gradient(96deg,rgba(48,171,237,.20),rgba(199,209,248,.14))!important;color:#FFFFFF!important;box-shadow:inset 0 0 0 1px rgba(48,171,237,.34),0 10px 26px rgba(146,82,220,.18)!important}.nav-item.active::before,.ritem.active::before,.item.active::before{content:""!important;position:absolute!important;left:0;top:18%;bottom:18%;width:3px;border-radius:0 4px 4px 0;background:linear-gradient(180deg,var(--px-accent),#7F18B3)!important;box-shadow:0 0 14px rgba(48,171,237,.7)!important}.nav-item.active svg,.tab.active svg,.ritem.active svg,.navtab.active svg,.item.active svg{stroke:var(--px-accent)!important;color:var(--px-accent)!important;opacity:1!important}.sub-item.active,.rsubitem.active,.dropitem.active{background:rgba(48,171,237,.10)!important;color:#FFFFFF!important;box-shadow:inset 2px 0 0 var(--px-accent)!important}.navtab.active{border-bottom-color:var(--px-accent)!important}.nav-item .chev,.ritem .chev{color:var(--px-dim)!important}.topbar,.tb1,.navshell,.mgr-topbar,.top{background:#0A1126!important;border-bottom:1px solid var(--px-border)!important;box-shadow:0 8px 30px rgba(0,0,0,.40)!important;color:var(--px-text)!important}.topbar::before,.tb1::before,.navshell::before{display:none!important}.tb-btn,.hamburger,.mgr-topbar-menu,.icon-btn{color:var(--px-muted)!important;background:transparent!important;border-radius:10px!important}.tb-btn:hover,.hamburger:hover,.mgr-topbar-menu:hover{background:rgba(199,209,248,.12)!important;color:var(--px-accent)!important}.clock,.tb-date{background:rgba(16,20,48,.8)!important;color:var(--px-text-2)!important;border:1px solid var(--px-border)!important;border-radius:10px!important;font-variant-numeric:tabular-nums!important}.avatar,.av,.who .av{background:linear-gradient(135deg,#30ABED,#7F18B3)!important;color:#FFFFFF!important;border:1px solid rgba(48,171,237,.42)!important;font-weight:800!important;box-shadow:0 8px 22px rgba(48,171,237,.22)!important}.who .nm,.who .t1,.who .pt{color:var(--px-text)!important}.who .ps,.who .t2{color:var(--px-muted)!important}.page-head{border-bottom:1px solid var(--px-border)!important;padding-bottom:15px!important}.page-head h2,.head h2{color:#FFFFFF!important;font-weight:700!important;letter-spacing:-.028em!important}.breadcrumb,.sub,.muted,.clock,.tb-date,.t2,.ps,.bar-label,.hint,.cell-sub,.info{color:var(--px-muted)!important}.page>.toolbar:not(:first-child)::before,.page>.table-wrap:not(:first-child)::before,.page>.card:not(:first-child)::before,.page>.grid2:not(:first-child)::before{background:var(--px-border)!important;opacity:1!important}.card,.toolbar,.table-wrap,.modal,.modal-box,.ms-modal,.box,.table,.dash-note-card{background:linear-gradient(180deg,#131C3E,#0D142C)!important;border:1px solid var(--px-border)!important;border-radius:var(--px-radius-lg)!important;box-shadow:var(--px-shadow-sm)!important;color:var(--px-text)!important}.card:hover,.table-wrap:hover{border-color:var(--px-border-2)!important}.card-head{border-bottom:1px solid var(--px-border)!important}.card-head h3,.card h3,.box h3{color:#FFFFFF!important;font-weight:680!important;letter-spacing:-.01em!important}.card-head .sub{color:var(--px-muted)!important}.grid2,.two-col,.stats-grid,.grid{background:transparent!important}.stats-grid,.dash-metrics{gap:18px!important}.stat-card{background:linear-gradient(180deg,rgba(16,20,48,.72),rgba(10,15,34,.92))!important;border:1px solid var(--px-border)!important;border-radius:18px!important}.stat-card.dash-metric,.metric{position:relative!important;overflow:hidden!important;border:1px solid var(--px-border-2)!important;border-radius:18px!important;background:linear-gradient(150deg,rgba(19,28,60,.92),rgba(8,12,28,.96))!important;box-shadow:0 16px 40px rgba(0,0,0,.48)!important;color:var(--px-text)!important;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease!important}.stat-card.dash-metric:hover{transform:translateY(-3px)!important;border-color:var(--px-accent-line)!important;box-shadow:0 24px 56px rgba(146,82,220,.26)!important}.stat-card.dash-metric::before{content:""!important;display:block!important;position:absolute!important;left:0!important;right:0!important;top:0!important;width:auto!important;height:2px!important;border-radius:0!important;background:linear-gradient(90deg,var(--px-accent),#9252DC,var(--px-accent-2))!important;opacity:.9!important}.stat-card.dash-metric::after{content:""!important;position:absolute!important;width:190px!important;height:190px!important;right:-72px!important;bottom:-96px!important;border-radius:50%!important;background:radial-gradient(circle,rgba(48,171,237,.16),transparent 68%)!important}.stat-card.dash-metric .stat-info p,.metric .muted{color:var(--px-muted)!important;text-transform:uppercase!important;font-size:10.5px!important;font-weight:700!important;letter-spacing:.14em!important}.stat-card.dash-metric .stat-info h3,.metric h3{color:#FFFFFF!important;font-weight:750!important;font-variant-numeric:tabular-nums!important;letter-spacing:-.02em!important}.stat-card.dash-metric .stat-info span{color:var(--px-text-2)!important}.dash-go{background:rgba(48,171,237,.12)!important;border:1px solid var(--px-accent-line)!important;color:var(--px-accent)!important}.dash-metric.d-blue::before{background:linear-gradient(90deg,#30ABED,#9252DC)!important}.dash-metric.d-blue::after{background:radial-gradient(circle,rgba(48,171,237,.18),transparent 68%)!important}.dash-metric.d-green::before{background:linear-gradient(90deg,#8B93B8,#8B93B8)!important}.dash-metric.d-green::after{background:radial-gradient(circle,rgba(199,209,248,.16),transparent 68%)!important}.dash-metric.d-pink::before{background:linear-gradient(90deg,#30ABED,#8B93B8)!important}.dash-metric.d-pink::after{background:radial-gradient(circle,rgba(48,171,237,.14),transparent 68%)!important}.dash-metric.d-orange::before{background:linear-gradient(90deg,#9252DC,#8B93B8)!important}.dash-metric.d-orange::after{background:radial-gradient(circle,rgba(199,209,248,.14),transparent 68%)!important}.dash-metric.d-blue,.dash-metric.d-green,.dash-metric.d-pink,.dash-metric.d-orange{background:linear-gradient(150deg,rgba(19,28,60,.92),rgba(8,12,28,.96))!important}.dash-note-card .card-head{border-bottom:1px solid var(--px-border)!important}.chart{background:linear-gradient(180deg,rgba(8,12,28,.55),transparent)!important;border-radius:14px!important;background-image:repeating-linear-gradient(to top,rgba(199,209,248,.07) 0 1px,transparent 1px 25%)!important}.bar{background:linear-gradient(180deg,#30ABED,#0E9E9A)!important;border-radius:8px 8px 3px 3px!important;box-shadow:0 0 18px rgba(48,171,237,.28)!important}.bar-col:nth-child(2n) .bar{background:linear-gradient(180deg,#8B93B8,#1663B8)!important;box-shadow:0 0 18px rgba(199,209,248,.26)!important}.bar-col:nth-child(3n) .bar{background:linear-gradient(180deg,#8B93B8,#4B4FC4)!important;box-shadow:0 0 18px rgba(139,147,184,.24)!important}.bar:hover{filter:brightness(1.18)!important}.bar .val{color:var(--px-text)!important;font-weight:650!important;font-variant-numeric:tabular-nums!important}.bar-label{color:var(--px-muted)!important}.bar-track{border-bottom:1px solid var(--px-border)!important}table{background:transparent!important;border-collapse:separate!important;border-spacing:0!important}thead th{background:#0B1026!important;color:var(--px-text-2)!important;font-weight:650!important;font-size:11px!important;text-transform:uppercase!important;letter-spacing:.10em!important;border-top:0!important;border-bottom:1px solid var(--px-border-2)!important;position:sticky!important;top:0!important;z-index:2!important}tbody tr td{background:transparent!important;color:var(--px-text)!important;border-bottom:1px solid rgba(199,209,248,.08)!important}tbody tr:nth-child(even) td{background:rgba(199,209,248,.022)!important}tbody tr:hover td{background:rgba(199,209,248,.075)!important;color:#FFFFFF!important}tbody tr:hover{transform:none!important}.table-wrap,.tscroll{border-color:var(--px-border)!important}.table-controls,.table-foot,.filter-row{background:transparent!important;color:var(--px-muted)!important;border-color:var(--px-border)!important}.table-controls label,.tc-right label,.tc-left label,.filter-row label{color:var(--px-text-2)!important;font-weight:600!important}.table-foot .info{color:var(--px-muted)!important}.pagination button{background:rgba(16,20,48,.85)!important;border:1px solid var(--px-border)!important;color:var(--px-text-2)!important;border-radius:9px!important}.pagination button:hover:not(.active){background:rgba(199,209,248,.14)!important;color:#FFFFFF!important;border-color:var(--px-border-2)!important}.pagination button.active{background:linear-gradient(96deg,var(--px-accent),#7F18B3)!important;color:#FFFFFF!important;border-color:transparent!important;font-weight:750!important;box-shadow:0 8px 20px rgba(48,171,237,.26)!important}.mono{font-family:'JetBrains Mono','SFMono-Regular',Consolas,Menlo,monospace!important;color:var(--px-text)!important;letter-spacing:.02em!important}.cell-money{color:var(--px-ok)!important;font-weight:700!important;font-variant-numeric:tabular-nums!important}.payout-rate,.rate-cell,.money{color:var(--px-accent-2)!important;font-weight:700!important;font-variant-numeric:tabular-nums!important}.otp{color:var(--px-accent)!important;font-weight:750!important;letter-spacing:.08em!important}.msg-body{color:var(--px-text-2)!important}.check-ok{color:var(--px-ok)!important}.sortable,.sort{color:inherit!important}.btn,button.btn,.ms-btn{border-radius:11px!important;font-weight:650!important;letter-spacing:.005em!important;border:1px solid transparent!important;transition:transform .14s ease,box-shadow .16s ease,filter .16s ease,background-color .16s ease!important}.btn-blue,.btn-purple,.btn-teal,.btn-rose,.ms-btn.primary,button.btn-gold,.btn:not([class*="btn-"]){background:linear-gradient(96deg,#30ABED 0%,#7F18B3 100%)!important;color:#FFFFFF!important;border:0!important;box-shadow:0 10px 26px rgba(146,82,220,.26)!important}.btn-green{background:linear-gradient(96deg,#25D9A4,#0FA97E)!important;color:#FFFFFF!important;border:0!important;box-shadow:0 10px 24px rgba(37,217,164,.22)!important}.btn-amber{background:linear-gradient(96deg,#FFB443,#F08A2E)!important;color:#1A1204!important;border:0!important;box-shadow:0 10px 24px rgba(255,180,67,.22)!important}.btn-red{background:linear-gradient(96deg,#FF5C7A,#E03457)!important;color:#FFF!important;border:0!important;box-shadow:0 10px 24px rgba(255,92,122,.24)!important}.btn-ghost,.ms-btn.ghost,.btn.ghost{background:rgba(16,20,48,.75)!important;color:var(--px-text-2)!important;border:1px solid var(--px-border-2)!important;box-shadow:none!important}.btn-ghost:hover,.btn.ghost:hover{background:rgba(199,209,248,.12)!important;color:#FFFFFF!important;border-color:var(--px-accent-line)!important}.btn:hover{transform:translateY(-1px)!important;filter:brightness(1.06)!important}.btn:active{transform:translateY(0)!important}.btn:focus-visible{outline:2px solid var(--px-accent)!important;outline-offset:2px!important}.icon-btn{border-radius:9px!important;color:#FFFFFF!important}.icon-btn svg{stroke:currentColor!important}input,select,textarea,.ms-field input{background:rgba(7,13,31,.82)!important;color:var(--px-text)!important;border:1px solid var(--px-border-2)!important;border-radius:11px!important;transition:border-color .15s ease,box-shadow .15s ease,background-color .15s ease!important}input::placeholder,textarea::placeholder{color:var(--px-dim)!important}input:hover,select:hover,textarea:hover{border-color:rgba(199,209,248,.34)!important}input:focus,select:focus,textarea:focus{border-color:var(--px-accent)!important;box-shadow:0 0 0 4px rgba(48,171,237,.14)!important;background:rgba(8,14,40,.95)!important;outline:none!important}select option{background:#0D142C!important;color:var(--px-text)!important}input[type="checkbox"],input[type="radio"]{accent-color:var(--px-accent)!important}.form-group label,.field label,label{color:var(--px-text-2)!important;font-weight:600!important}.form-group .hint,.hint{color:var(--px-dim)!important}.form-group label .req,.req{color:var(--px-danger)!important}.upload-box{background:rgba(7,13,31,.6)!important;border:2px dashed var(--px-border-2)!important;color:var(--px-muted)!important;border-radius:14px!important}.upload-box:hover{border-color:var(--px-accent)!important;color:var(--px-text)!important;background:rgba(48,171,237,.05)!important}.upload-box svg{stroke:var(--px-accent)!important}.upload-box b{color:var(--px-accent)!important}.tag,.tag-blue,.tag-green,.tag-amber,.tag-red,.tag-gray,.tag-mgr,.tag-agt,.tag-cli,.tag-client,.chip{border-radius:8px!important;font-weight:650!important;font-size:11.5px!important;letter-spacing:.02em!important;box-shadow:none!important;background:rgba(199,209,248,.10)!important;color:var(--px-text-2)!important;border:1px solid var(--px-border-2)!important}.tag-mgr{background:rgba(139,147,184,.16)!important;color:#B9C2FF!important;border:1px solid rgba(139,147,184,.38)!important}.tag-agt{background:rgba(48,171,237,.14)!important;color:#7DF0DA!important;border:1px solid rgba(48,171,237,.36)!important}.tag-cli,.tag-client{background:rgba(199,209,248,.14)!important;color:#9AD8FF!important;border:1px solid rgba(199,209,248,.36)!important}.tag-blue{background:rgba(199,209,248,.14)!important;color:#9AD8FF!important;border:1px solid rgba(199,209,248,.36)!important}.tag-green{background:rgba(37,217,164,.14)!important;color:#84EFC9!important;border:1px solid rgba(37,217,164,.36)!important}.tag-amber{background:rgba(255,180,67,.14)!important;color:#FFD79A!important;border:1px solid rgba(255,180,67,.36)!important}.tag-red{background:rgba(255,92,122,.14)!important;color:#FFB0BF!important;border:1px solid rgba(255,92,122,.36)!important}.tag-gray{background:rgba(199,209,248,.10)!important;color:var(--px-muted)!important;border:1px solid var(--px-border-2)!important}.tag .x{opacity:.6!important}.tag .x:hover{opacity:1!important;color:var(--px-danger)!important}.drill .dchip{background:rgba(16,20,48,.8)!important;border:1px solid var(--px-border-2)!important;color:var(--px-text-2)!important;border-radius:999px!important}.drill .dchip:hover{border-color:var(--px-accent)!important;color:#FFFFFF!important}.drill .dchip.active{background:linear-gradient(96deg,var(--px-accent),#7F18B3)!important;color:#FFFFFF!important;border-color:transparent!important}.section-title{color:var(--px-accent)!important;font-weight:650!important}.dot{box-shadow:0 0 0 5px rgba(37,217,164,.16)!important}.modal-overlay{backdrop-filter:blur(4px)!important}.modal-overlay{background:rgba(3,6,18,.76)!important}.modal,.modal-box,.ms-modal,.box{background:linear-gradient(180deg,#131C3E,#0C122B)!important;border:1px solid var(--px-border-2)!important;border-radius:20px!important;box-shadow:0 34px 80px rgba(0,0,0,.72)!important}.modal-head,.ms-modal-head{border-bottom:1px solid var(--px-border)!important;background:transparent!important}.modal-head h3,.ms-modal-head h3{color:#FFFFFF!important}.modal-foot,.ms-modal-foot{border-top:1px solid var(--px-border)!important;background:transparent!important}.modal-close{color:var(--px-muted)!important}.modal-close:hover{color:var(--px-danger)!important}.overlay{background:rgba(3,6,18,.62)!important}.ms-notif-panel,.ms-profile-menu{background:linear-gradient(180deg,#131C3E,#0C122B)!important;border:1px solid var(--px-border-2)!important;color:var(--px-text)!important;box-shadow:0 26px 70px rgba(0,0,0,.7)!important;border-radius:16px!important}.ms-notif-head,.ms-notif-foot{background:rgba(7,13,31,.7)!important;border-color:var(--px-border)!important;color:var(--px-text)!important}.ms-notif-item{border-color:var(--px-border)!important;color:var(--px-text-2)!important}.ms-notif-item:hover,.ms-notif-item.unread,.ms-profile-item:hover{background:rgba(199,209,248,.10)!important}.ms-profile-item{color:var(--px-text)!important}.ms-toast{background:linear-gradient(96deg,#0D142C,#131736)!important;border:1px solid var(--px-accent-line)!important;color:#FFFFFF!important;box-shadow:0 20px 50px rgba(146,82,220,.28)!important}.ms-progress{background:linear-gradient(90deg,#30ABED,#9252DC,#8B93B8)!important}.ms-working{box-shadow:0 0 0 4px rgba(48,171,237,.20)!important}.ms-switch{color:var(--px-text)!important}.ms-page-link-overlay:focus{outline-color:var(--px-accent)!important}@keyframes pxFade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}.page.active{animation:pxFade .26s cubic-bezier(.22,.9,.3,1) both!important}@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}@media(max-width:900px){.sidebar,.rail,.appbar{box-shadow:24px 0 70px rgba(0,0,0,.7)!important}.content{background:transparent!important}.stat-card.dash-metric{border-radius:16px!important}}</style>
+<link rel="stylesheet" href="/assets/galaxy.css?v=gal-8"/><link rel="stylesheet" href="/assets/galaxy-light.css?v=gal-8"/><script src="/assets/galaxy.js?v=gal-8" defer></script><link rel="stylesheet" href="/assets/whizz.css?v=wz-1"/><script src="/assets/whizz-ui.js?v=wz-1" defer></script></head>
+<body class="whizz">
 <div class="layout">
   <!-- ================= SIDEBAR ================= -->
   <aside class="sidebar" id="sidebar">
     <div class="sb-brand">
-      <div class="sb-logo"><img class="powerx-logo-img" src="/assets/powerx-logo.png?v=px-1" alt="POWER X SMS" /></div>
-      <div><h1>POWER X SMS</h1><small>Management Panel</small></div>
+      <div class="sb-logo"><img class="powerx-logo-img whizz-logo-img" src="/assets/whizz-mark-light.png?v=wz-1" alt="WHIZZ" /></div>
+      <div><h1>WHIZZ</h1><small>Management Panel</small></div>
     </div>
     <nav class="sb-nav">
       <div class="sb-section">Number Maintenance</div>
-      <div class="nav-item" data-page="import"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>Import Numbers / Ranges</span></div>
-      <div class="nav-item" data-page="testImport"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18v-6a3 3 0 0 1 6 0v6"/><rect x="4" y="18" width="16" height="3"/><path d="M12 3v3"/></svg><span>Import Test Numbers</span></div>
+      <div class="nav-item" data-page="import"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>Import Numbers</span></div>
+      <!-- WHIZZ: Import Test Numbers nav removed per spec -->
 
       <div class="sb-section">Pricing</div>
       <div class="nav-item active" data-page="rates"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><span>Rate Management</span></div>
@@ -396,13 +396,14 @@
       <div class="submenu" id="sysSub">
         <div class="sub-item" data-page="cliLimit"><span class="dot"></span> SMS CLI Limit</div>
         <div class="sub-item" data-page="limitManagement"><span class="dot"></span> Limit Management</div>
-        <div class="sub-item" data-page="carrierIntegration"><span class="dot"></span> Carrier Integration</div>
+        <div class="sub-item" data-page="carrierIntegration"><span class="dot"></span> HTTP Integration</div>
+        <div class="sub-item" data-page="providers"><span class="dot"></span> Providers</div>
         <div class="sub-item" data-page="apiProviders"><span class="dot"></span> API Providers</div>
         <div class="sub-item" data-page="smppConnections"><span class="dot"></span> SMPP Connections</div>
         <div class="sub-item" data-page="systemLogs"><span class="dot"></span> System Logs</div>
         <div class="sub-item" data-page="backupManagement"><span class="dot"></span> Backups</div>
       </div>
-    </nav>
+          </nav>
   </aside>
   <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 
@@ -438,7 +439,7 @@
 
       <!-- ========== IMPORT ========== -->
       <section class="page" id="page-import">
-        <div class="page-head"><div><h2>Import Numbers / Ranges</h2><div class="breadcrumb"><b>SMS Module</b> › Import</div></div></div>
+        <div class="page-head"><div><h2>Import Numbers</h2><div class="breadcrumb"><b>SMS Module</b> › Import</div></div></div>
         <div class="two-col">
           <div class="card">
             <div class="card-head"><div><h3>Upload Numbers File</h3><div class="sub">CSV / Excel / TXT — bulk numbers</div></div></div>
@@ -448,37 +449,24 @@
             </div>
             <input type="file" id="numFile" accept=".csv,.xlsx,.xls,.txt" style="display:none" onchange="handleFile('numFile','numFileInfo')" />
             <div class="form-group" style="margin-top:14px"><label>Assign to Range</label><select id="importRange"><option value="">Select Range</option></select></div>
+            <div class="form-group" style="margin-top:14px"><label>Provider</label><select id="importProvider"><option value="">— No Provider —</option></select><div class="hint">Range is provider se link hogi (Number → Range → Provider)</div></div>
             <div id="numFileInfo" class="hint"></div>
             <button class="btn btn-purple" style="margin-top:12px;width:100%" onclick="doImport('numFile')">Import Numbers</button>
           </div>
-          <div class="card">
-            <div class="card-head"><div><h3>Upload Ranges File</h3><div class="sub">CSV / Excel — ranges + rates</div></div></div>
-            <div class="upload-box" onclick="document.getElementById('rangeFile').click()">
-              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              <div>Click to select or drop file here<br><b>ranges.csv / .xlsx</b></div>
-            </div>
-            <input type="file" id="rangeFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="handleFile('rangeFile','rangeFileInfo')" />
-            <div id="rangeFileInfo" class="hint" style="margin-top:12px"></div>
-            <button class="btn btn-purple" style="margin-top:12px;width:100%" onclick="doImport('rangeFile')">Import Ranges</button>
-            <button class="btn btn-ghost" style="margin-top:8px;width:100%" onclick="downloadRangeTemplate()">Download Sample Template</button>
-            <div class="hint" style="margin-top:10px;color:#5c6a86">Template columns: Range, Prefix, Test Number, Currency, Payment Type, 1/1, 7/1, 7/7, 30/45, Memo. Excel files should be saved/exported as CSV.</div>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top:16px;border:1px solid rgba(124,58,237,.24)">
+<div class="card">
           <div class="card-head"><div><h3>Bulk Number Import by TXT Files</h3><div class="sub">Select multiple .txt files. Each file name is used as Range Name, and file contents are numbers.</div></div></div>
           <div class="form-grid" style="grid-template-columns:2fr 1fr;gap:14px;align-items:end">
             <div class="form-group"><label>TXT Files (one range per file)</label><input type="file" id="bulkTxtFiles" accept=".txt,.csv" multiple /></div>
             <div class="form-group"><label><input type="checkbox" id="bulkCreateMissingRanges" style="width:auto" checked> Create missing ranges automatically</label></div>
           </div>
+          <div class="form-group" style="margin-top:12px"><label>Provider (is batch ki sab ranges)</label><select id="bulkImportProvider"><option value="">— No Provider —</option></select></div>
           <button class="btn btn-purple" onclick="bulkImportTxtFiles()">Import Selected TXT Files</button>
           <div class="hint" id="bulkTxtInfo" style="margin-top:10px">Example: <b>Nigeria.txt</b> will import all numbers inside it into range <b>Nigeria</b>.</div>
         </div>
+          <!-- WHIZZ: Upload Ranges File card removed per spec (backend untouched) -->
+        </div>
 
-
-
-
-      </section>
+        </section>
 
 
       <!-- ========== IMPORT TEST NUMBERS ========== -->
@@ -516,9 +504,10 @@
       <section class="page" id="page-clients"></section>
 
       <!-- ========== RATE MANAGEMENT ========== -->
-      <section class="page active" id="page-rates">
+      <!-- ========== AI ASSISTANT KNOWLEDGE (P12/P13) ========== -->
+            <section class="page active" id="page-rates">
         <div class="page-head"><div><h2>Rate Management</h2><div class="breadcrumb"><b>Pricing</b> › Ranges &amp; Rates</div></div>
-          <div class="head-actions"><button class="btn btn-ghost" onclick="showPageByName('import')">⬆ Import Ranges</button><button class="btn btn-purple" onclick="openRateModal(-1)">+ Add Range</button></div>
+          <div class="head-actions"><!-- WHIZZ: Import Ranges button removed per spec (import page remains via sidebar) --><button class="btn btn-purple" onclick="openRateModal(-1)">+ Add Range</button></div>
         </div>
         <div class="card" style="margin-bottom:16px">
           <div class="card-head"><div><h3>Bulk Range Creation</h3><div class="sub">Enter one range name per line. Existing ranges will be skipped automatically.</div></div><button class="btn btn-green" onclick="bulkCreateRanges()">Create Ranges</button></div>
@@ -532,38 +521,19 @@ Nigeria"></textarea><div class="hint">Default rates will be NA. You can edit pay
             <div><div class="form-group"><label>Default Currency</label><select id="bulkRangeCurrency"><option value="USD">USD</option><option value="EUR">EUR</option><option value="PKR">PKR</option></select></div><div class="form-group"><label>Payment Type</label><select id="bulkRangePaymentType"><option value="daily">Daily</option><option value="weekly" selected>Weekly</option><option value="monthly_30x45">Monthly (30x45)</option></select></div><button class="btn btn-purple" style="width:100%;margin-top:10px" onclick="bulkCreateRanges()">Create All</button></div>
           </div>
         </div>
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-head"><div><h3>Bulk Range + Test Numbers Import</h3><div class="sub">Single file creates ranges and imports their test numbers into Test Panel automatically.</div></div><button class="btn btn-green" onclick="importRangeTestBulkFile()">Import File</button></div>
-          <div class="form-grid" style="grid-template-columns:1fr 220px;gap:14px;align-items:end">
-            <div>
-              <div class="upload-box" onclick="document.getElementById('rangeTestBulkFile').click()">
-                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                <div>Upload TXT / CSV / XLS / XLSX<br><b>Range line, then test number lines</b></div>
-              </div>
-              <input type="file" id="rangeTestBulkFile" accept=".txt,.csv,.xls,.xlsx" style="display:none" onchange="handleFile('rangeTestBulkFile','rangeTestBulkInfo')" />
-              <div id="rangeTestBulkInfo" class="hint" style="margin-top:12px"></div>
-            </div>
-            <div><div class="form-group"><label>Default Currency</label><select id="rangeTestBulkCurrency"><option value="USD">USD</option><option value="EUR">EUR</option><option value="PKR">PKR</option></select></div><div class="form-group"><label>Payment Type</label><select id="rangeTestBulkPaymentType"><option value="daily">Daily</option><option value="weekly" selected>Weekly</option><option value="monthly_30x45">Monthly (30x45)</option></select></div><button class="btn btn-purple" style="width:100%;margin-top:10px" onclick="importRangeTestBulkFile()">Create + Import Test Numbers</button></div>
-          </div>
-          <pre style="background:#f8fafc;border:1px solid var(--border);border-radius:12px;padding:12px;margin-top:12px;color:#0f2454;white-space:pre-wrap">Nigeria MTN
-08031234567
-08039876543
-Pakistan Jazz
-03001234567
-03019876543</pre>
-        </div>
+        <!-- WHIZZ: combined Range+Test bulk import UI removed per spec (backend endpoint untouched) -->
 
         <div class="table-wrap" style="padding:16px 18px;margin-top:0">
           <div class="table-controls">
             <div class="tc-left"><label>Show Records:</label>
-              <select id="rateLen" onchange="renderRates()"><option>10</option><option selected>25</option><option>50</option><option>100</option><option>500</option><option value="All">All</option></select>
-              <div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue">CSV</button><button class="btn btn-green">Excel</button></div>
+              <select id="rateLen" onchange="renderRates()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>
+              <div class="exp-btns"><button class="btn btn-blue" >Copy</button><button class="btn btn-blue" >CSV</button><button class="btn btn-green" >Excel</button></div>
             </div>
             <div class="tc-right"><label>Search:</label><input type="text" id="rateSearch" oninput="renderRates()" placeholder="Search..." /></div>
           </div>
         </div>
         <div class="table-wrap"><div class="tscroll"><table>
-          <thead><tr><th>Range</th><th>Prefix</th><th>Test Number</th><th>Currency</th><th>Payment Type</th><th>1/1</th><th>7/1</th><th>7/7</th><th>30/45</th><th>Memo</th><th>Action</th></tr></thead>
+          <thead><tr><th>Range</th><th>Prefix</th><th>Country</th><th>Provider</th><th>Test Number</th><th>Currency</th><th>Pay</th><th>1/1</th><th>7/1</th><th>7/7</th><th>30/45</th><th title="Admin-internal provider cost rates (1/1 · 7/1 · 7/7 · 30/45) — not shown to Manager/Agent/Client">Prov. Rate</th><th>Status</th><th>Memo</th><th>Action</th></tr></thead>
           <tbody id="ratesBody"></tbody>
         </table></div>
           <div class="table-foot"><div class="info" id="ratesInfo"></div><div class="pagination"><button>‹</button><button class="active">1</button><button>2</button><button>3</button><button>›</button></div></div>
@@ -578,7 +548,7 @@ Pakistan Jazz
             <div style="position:relative;min-width:260px"><label>CLI / Sender ID</label><input type="text" id="cliSearchInput" placeholder="Type prefix: T, Ti, Whats..." autocomplete="off" oninput="loadCliSuggestions()"/><div id="cliSuggestBox" style="position:absolute;left:0;right:0;top:64px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 16px 36px rgba(10,10,11,.14);z-index:20;display:none;max-height:240px;overflow:auto"></div></div>
             <div><label>From Date</label><input type="date" id="cliFrom"/></div>
             <div><label>To Date</label><input type="date" id="cliTo"/></div>
-            <div style="padding-top:25px"><button class="btn btn-blue" onclick="searchCliAnalytics()">Search</button> <button class="btn btn-ghost" onclick="resetCliSearch()">Reset</button></div>
+            <div style="padding-top:25px"><button class="btn btn-blue"  onclick="searchCliAnalytics()">Search</button> <button class="btn btn-ghost"  onclick="resetCliSearch()">Reset</button></div>
           </div>
         </div>
         <div class="stats-grid">
@@ -587,7 +557,7 @@ Pakistan Jazz
           <div class="stat-card dash-metric d-green"><div class="stat-info"><p>Last 7 Days OTP Count</p><h3 id="cliLast7">0</h3><span>Selected CLI</span></div><div class="dash-go">7</div></div>
           <div class="stat-card dash-metric d-orange"><div class="stat-info"><p>This Month OTP Count</p><h3 id="cliMonth">0</h3><span>Selected CLI</span></div><div class="dash-go">M</div></div>
         </div>
-        <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div class="table-controls"><div class="tc-left"><label>Show Records:</label><select id="cliLen" onchange="renderCliRanges()"><option>10</option><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>10000</option><option value="All">All</option></select></div><div class="tc-right"><label>Search Range:</label><input type="text" id="cliRangeSearch" oninput="renderCliRanges()" placeholder="Search range..."/></div></div></div>
+        <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div class="table-controls"><div class="tc-left"><label>Show Records:</label><select id="cliLen" onchange="renderCliRanges()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select></div><div class="tc-right"><label>Search Range:</label><input type="text" id="cliRangeSearch" oninput="renderCliRanges()" placeholder="Search range..."/></div></div></div>
         <div class="table-wrap"><div class="tscroll"><table><thead id="cliRangeHead"><tr><th>Range</th><th>Today Count</th><th>Yesterday Count</th></tr></thead><tbody id="cliRangeBody"></tbody></table></div><div class="table-foot"><div class="info" id="cliRangeInfo"></div></div></div>
       </section>
 
@@ -603,9 +573,9 @@ Pakistan Jazz
       <!-- ========== PAYMENTS ========== -->
 
       <section class="page" id="page-carrierIntegration">
-        <div class="page-head"><div><h2>Carrier Integration</h2><div class="breadcrumb"><b>System Master</b> › Carrier HTTP Settings</div></div></div>
+        <div class="page-head"><div><h2>HTTP Integration</h2><div class="breadcrumb"><b>System Master</b> › HTTP Integration</div></div></div>
         <div class="card" id="carrierLockCard" style="margin-bottom:16px;display:none;border:1px solid rgba(212,175,55,.35)">
-          <div class="card-head"><div><h3>Carrier Integration Locked</h3><div class="sub">Enter security password to view or change carrier settings.</div></div></div>
+          <div class="card-head"><div><h3>HTTP Integration Locked</h3><div class="sub">Enter security password to view or change carrier settings.</div></div></div>
           <div class="form-grid" style="grid-template-columns:1fr auto;gap:12px;align-items:end">
             <div class="form-group"><label>Password</label><input id="carrierLockPassword" type="password" placeholder="Enter password" /></div>
             <button class="btn btn-purple" onclick="unlockCarrierIntegration()">Unlock</button>
@@ -626,7 +596,7 @@ Pakistan Jazz
             <div class="form-group"><label>Allowed Carrier IP List</label><input id="ciIp" placeholder="51.77.64.61, 51.77.64.62, 127.0.0.1" /><div class="hint">Comma, space or new-line separated IP addresses.</div></div>
             <div class="form-group"><label>Webhook Log Retention</label><select id="ciRetention"><option value="7">7 Days</option><option value="30">30 Days</option><option value="90">90 Days</option><option value="180">180 Days</option></select></div>
           </div>
-          <div class="form-group"><label>HTTP Callback URL</label><div style="display:flex;gap:8px;align-items:center"><input id="ciCallback" placeholder="https://yourdomain.com/api/incoming-sms"/><button class="btn btn-blue btn-sm" onclick="copyCarrierUrl()" type="button">Copy</button><button class="btn btn-green btn-sm" onclick="testCarrierConnection()" type="button">Test Connection</button></div><div class="hint">Send this URL to the carrier. The URL must end with <b>/api/incoming-sms</b>.</div></div>
+          <div class="form-group"><label>HTTP Callback URL</label><div style="display:flex;gap:8px;align-items:center"><input id="ciCallback" placeholder="https://yourdomain.com/api/incoming-sms"/><button class="btn btn-blue btn-sm"  onclick="copyCarrierUrl()" type="button">Copy</button><button class="btn btn-green"  onclick="testCarrierConnection()" type="button">Test Connection</button></div><div class="hint">Send this URL to the carrier. The URL must end with <b>/api/incoming-sms</b>.</div></div>
           <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:14px">
             <div class="form-group"><label>Future API Key</label><input id="ciApiKey" placeholder="Optional / future" /></div>
             <div class="form-group"><label>Future Auth Token</label><input id="ciToken" placeholder="Optional / future" /></div>
@@ -638,10 +608,23 @@ Pakistan Jazz
           </div></div>
           <div class="form-group"><label>Notes</label><textarea id="ciNotes" style="width:100%;min-height:80px;border:1px solid var(--border2);border-radius:9px;padding:10px" placeholder="Request format, field names, auth notes or carrier instructions..."></textarea></div>
           <div class="hint" id="ciInfo" style="margin-bottom:12px"></div>
-          <button class="btn btn-purple" onclick="saveCarrierSettings()">Save Carrier Settings</button>
+          <button class="btn btn-purple" onclick="saveCarrierSettings()">Save HTTP Settings</button>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head"><div><h3>IP Entries — Provider + IP</h3><div class="sub">IP technical value hai; Provider naam sirf identification/management ke liye. Enabled IPs ingestion allowlist mein hoti hain.</div></div></div>
+          <div class="form-grid" style="grid-template-columns:2fr 2fr auto;gap:12px;align-items:end">
+            <div class="form-group"><label>Provider</label><input id="aiName" list="provNames" placeholder="e.g. Example Provider" /></div>
+            <div class="form-group"><label>IP Address</label><input id="aiIp" placeholder="123.123.123.123" /></div>
+            <button class="btn btn-green" style="margin-bottom:1px" onclick="addActivityIp()">Add IP</button>
+          </div>
+          <div class="table-wrap" style="margin-top:10px"><div class="tscroll"><table>
+            <thead><tr><th>Provider</th><th>IP Address</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="aiBody"></tbody>
+          </table></div><div class="table-foot"><div class="info" id="aiInfo"></div></div></div>
         </div>
         <div class="card" style="margin-bottom:16px">
-          <div class="card-head"><div><h3>Carrier Webhook Logs</h3><div class="sub">Incoming carrier requests and system responses for debugging.</div></div><div class="head-actions"><button class="btn btn-blue" onclick="loadCarrierWebhookLogs()">Refresh Logs</button><button class="btn btn-red" onclick="clearCarrierWebhookLogs()">Clear Logs</button><button class="btn btn-green" onclick="exportCarrierLogsCsv()">Export CSV / Excel</button></div></div>
+          <div class="card-head"><div><h3>HTTP Webhook Logs</h3><div class="sub">Incoming carrier requests and system responses for debugging.</div></div><div class="head-actions"><button class="btn btn-blue"  onclick="loadCarrierWebhookLogs()">Refresh Logs</button><button class="btn btn-red"  onclick="clearCarrierWebhookLogs()">Clear Logs</button><button class="btn btn-green" onclick="exportCarrierLogsCsv()">Export CSV / Excel</button></div></div>
           <div class="table-wrap"><div class="tscroll"><table>
             <thead><tr><th>Timestamp</th><th>Source IP</th><th>Number</th><th>CLI/Sender</th><th>Message Preview</th><th>Status</th><th>Error Message</th></tr></thead>
             <tbody id="ciLogBody"></tbody>
@@ -651,7 +634,7 @@ Pakistan Jazz
       </section>
 
       <section class="page" id="page-systemLogs">
-        <div class="page-head"><div><h2>System Logs</h2><div class="breadcrumb"><b>System Master</b> › Activity / Webhook / Failed Queue</div></div><div class="head-actions"><button class="btn btn-blue" onclick="loadSystemLogs()">Refresh</button></div></div>
+        <div class="page-head"><div><h2>System Logs</h2><div class="breadcrumb"><b>System Master</b> › Activity / Webhook / Failed Queue</div></div><div class="head-actions"><button class="btn btn-blue"  onclick="loadSystemLogs()">Refresh</button></div></div>
         <div class="toolbar"><div class="filter-row">
           <button class="btn btn-blue" onclick="showLogTab('activity')">Activity Logs</button>
           <button class="btn btn-blue" onclick="showLogTab('number')">Number History</button>
@@ -679,11 +662,11 @@ Pakistan Jazz
         <div class="toolbar"><div class="filter-row">
           <select class="sel-lg" id="testRange"><option value="">Select Range</option></select>
           <input type="text" id="testCliFilter" placeholder="Filter by CLI (e.g. TikTok)" oninput="renderTest()" style="min-width:220px"/>
-          <button class="btn btn-red" onclick="renderTest()">Filter</button>
-          <button class="btn btn-ghost" onclick="document.getElementById('testCliFilter').value='';document.getElementById('testRange').value='';renderTest()">Reset</button>
+          <button class="btn btn-red"  onclick="renderTest()">Filter</button>
+          <button class="btn btn-ghost"  onclick="document.getElementById('testCliFilter').value='';document.getElementById('testRange').value='';renderTest()">Reset</button>
         </div></div>
         <div class="card" style="margin-bottom:16px;border:1px solid rgba(212,175,55,.35)">
-          <div class="card-head"><div><h3>Demo Traffic Generator</h3><div class="sub">Admin-only: generate fake/demo OTP messages on Test Numbers for display traffic.</div></div><button class="btn btn-red btn-sm" onclick="clearAdminFakeTraffic()">Clear Demo Traffic</button></div>
+          <div class="card-head"><div><h3>Demo Traffic Generator</h3><div class="sub">Admin-only: generate fake/demo OTP messages on Test Numbers for display traffic.</div></div><button class="btn btn-red btn-sm"  onclick="clearAdminFakeTraffic()">Clear Demo Traffic</button></div>
           <div class="form-grid" style="grid-template-columns:140px auto;gap:12px;align-items:end;margin-bottom:12px">
             <div class="form-group"><label>Limit</label><input id="adminFakeDefaultLimit" type="number" min="1" max="1000" value="25"></div>
             <button class="btn btn-purple" onclick="generateAdminDefaultFake()">Generate Default Demo</button>
@@ -700,8 +683,8 @@ Pakistan Jazz
           <div>
             <h3 style="margin-bottom:12px;font-size:16px">SMS Test Numbers</h3>
             <div class="table-wrap" style="padding:14px 16px;margin-top:0"><div class="table-controls">
-              <div class="tc-left"><label>Show Records:</label><select id="testNumLen" onchange="renderTest()"><option>10</option><option selected>25</option><option>50</option></select>
-                <div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue">CSV</button><button class="btn btn-green">Excel</button></div></div>
+              <div class="tc-left"><label>Show Records:</label><select id="testNumLen" onchange="renderTest()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>
+                <div class="exp-btns"><button class="btn btn-blue" >Copy</button><button class="btn btn-blue" >CSV</button><button class="btn btn-green" >Excel</button></div></div>
               <div class="tc-right"><label>Range:</label><select id="testNumRange" onchange="renderTest()" style="min-width:150px"><option value="">All</option></select><label>Search:</label><input type="text" id="testNumSearch" oninput="renderTest()" placeholder="Search..."/></div>
             </div></div>
             <div class="table-wrap"><div class="tscroll"><table>
@@ -712,8 +695,8 @@ Pakistan Jazz
           <div>
             <h3 style="margin-bottom:12px;font-size:16px">Recent SMS Test</h3>
             <div class="table-wrap" style="padding:14px 16px;margin-top:0"><div class="table-controls">
-              <div class="tc-left"><label>Show Records:</label><select id="testRecLen" onchange="renderTest()"><option>10</option><option selected>25</option><option>50</option></select>
-                <div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue">CSV</button><button class="btn btn-green">Excel</button></div></div>
+              <div class="tc-left"><label>Show Records:</label><select id="testRecLen" onchange="renderTest()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>
+                <div class="exp-btns"><button class="btn btn-blue" >Copy</button><button class="btn btn-blue" >CSV</button><button class="btn btn-green" >Excel</button></div></div>
               <div class="tc-right"><label>Search:</label><input type="text" id="testRecSearch" oninput="renderTest()" placeholder="Search..."/></div>
             </div></div>
             <div class="table-wrap"><div class="tscroll"><table>
@@ -727,7 +710,7 @@ Pakistan Jazz
 
       <section class="page" id="page-backupManagement">
         <div class="page-head"><div><h2>Database Backups</h2><div class="breadcrumb"><b>System Master</b> › Backup & Restore</div></div>
-          <div class="head-actions"><button class="btn btn-blue" onclick="loadBackups()">Refresh</button><button class="btn btn-green" onclick="createBackupNow()">Create Backup Now</button><button class="btn btn-purple" onclick="downloadLatestBackup()">Download Latest</button></div>
+          <div class="head-actions"><button class="btn btn-blue"  onclick="loadBackups()">Refresh</button><button class="btn btn-green" onclick="createBackupNow()">Create Backup Now</button><button class="btn btn-purple" onclick="downloadLatestBackup()">Download Latest</button></div>
         </div>
         <div class="stats-grid">
           <div class="stat-card dash-metric d-blue"><div class="stat-info"><p>Total Backups</p><h3 id="bkTotal">0</h3><span>Available snapshots</span></div><div class="dash-go">DB</div></div>
@@ -746,9 +729,70 @@ Pakistan Jazz
       </section>
 
       <!-- ========== SYSTEM MASTER: API PROVIDERS ========== -->
+      <section class="page" id="page-providers">
+        <div class="page-head"><div><h2>Providers</h2><div class="breadcrumb"><b>System Master</b> › Provider Management</div></div>
+          <div class="head-actions"><button class="btn btn-purple" onclick='openProvModal(null)'>+ Add Provider</button></div></div>
+        <div class="hint" id="provUnlinked" style="display:none;margin-bottom:10px"></div>
+        <div class="table-wrap"><div class="tscroll"><table>
+          <thead><tr><th>Provider</th><th>Connection</th><th>Payment Term</th><th>Currency</th><th>Numbers</th><th>Messages</th><th>Unpaid Payout</th><th>Last Payment</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="provBody"></tbody>
+        </table></div><div class="table-foot"><div class="info" id="provInfo"></div></div></div>
+        <div class="hint" style="margin-top:10px">Providers sirf manually bante hain (integrations se auto-create nahi hote). Credentials connection pages par hi rehte hain (HTTP / API / SMPP). Unpaid = lifetime payout − settled; partial payment allowed.</div>
+      </section>
+
+      <div class="modal-overlay" id="provModal"><div class="modal" style="max-width:540px">
+        <div class="modal-head"><h3 id="provModalTitle">Add Provider</h3><button class="modal-close" onclick="closeModal('provModal')">×</button></div>
+        <div class="modal-body">
+          <div class="form-group"><label>Provider Name <span class="req">*</span></label><input id="pvName" placeholder="e.g. Example Provider" /></div>
+          <div class="form-grid">
+            <div class="form-group"><label>Provider Connection</label><select id="pvConn"><option value="">—</option><option>HTTP</option><option>API</option><option>SMPP</option><option>Multiple</option></select></div>
+            <div class="form-group"><label>Payment Term</label><select id="pvTerm"><option value="">—</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="weekly_7_7">7/7</option><option value="monthly_30x45">30/45 (30d cycle, pay after 45)</option></select></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group"><label>Currency</label><select id="pvCurrency"><option>USD</option><option>EUR</option><option>USDT</option></select></div>
+            <div class="form-group"><label>Status</label><select id="pvStatus"><option>Active</option><option>Inactive</option></select></div>
+          </div>
+          <div class="hint">Provider Rate / Payment Method jaan-bujh kar nahi hain. Payout messages par existing range/number rates se calculate hota hai. Credentials yahan duplicate nahi hote.</div>
+        </div>
+        <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('provModal')">Cancel</button><button class="btn btn-purple" onclick="saveProvider()">Save Provider</button></div>
+      </div></div>
+
+      <div class="modal-overlay" id="provViewModal"><div class="modal" style="max-width:680px">
+        <div class="modal-head"><h3 id="provViewTitle">Provider</h3><button class="modal-close" onclick="closeModal('provViewModal')">×</button></div>
+        <div class="modal-body">
+          <div id="provViewChips" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px"></div>
+          <div class="card-head" style="margin-bottom:8px"><div><h3 style="font-size:14px">Payout Periods</h3></div></div>
+          <div id="provViewPeriods" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px"></div>
+          <div class="card-head" style="margin-bottom:8px"><div><h3 style="font-size:14px">Connections & Inventory</h3></div></div>
+          <div id="provViewConns" style="margin-bottom:6px"></div>
+        </div>
+        <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('provViewModal')">Close</button><button class="btn btn-blue" id="provViewHistBtn" onclick="">Payment History</button><button class="btn btn-green" id="provViewPayBtn" onclick="">Record Payment</button></div>
+      </div></div>
+
+      <div class="modal-overlay" id="provPayModal"><div class="modal" style="max-width:440px">
+        <div class="modal-head"><h3 id="provPayTitle">Record Payment</h3><button class="modal-close" onclick="closeModal('provPayModal')">×</button></div>
+        <div class="modal-body">
+          <div style="margin-bottom:12px"><span class="muted">Current Unpaid Payout:</span> <b id="provPayUnpaid" class="cell-money" style="font-size:18px">$ 0</b></div>
+          <div class="form-group"><label>Payment Amount <span class="req">*</span></label><input type="text" inputmode="decimal" id="payAmount" placeholder="0.00" /><div class="hint">Partial payment allowed — baqi amount unpaid rehta hai.</div></div>
+          <div class="form-group"><label>Payment Period (optional)</label><input id="payPeriod" placeholder="e.g. weekly / 1-7 Sep" /></div>
+        </div>
+        <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('provPayModal')">Cancel</button><button class="btn btn-green" onclick="provPaySave()">Confirm Payment</button></div>
+      </div></div>
+
+      <div class="modal-overlay" id="provHistModal"><div class="modal" style="max-width:760px">
+        <div class="modal-head"><h3 id="provHistTitle">Payment History</h3><button class="modal-close" onclick="closeModal('provHistModal')">×</button></div>
+        <div class="modal-body">
+          <div class="table-wrap"><div class="tscroll"><table>
+            <thead><tr><th>Date</th><th>Amount</th><th>Prev Unpaid</th><th>Remaining</th><th>Period</th><th>By</th><th>Notes</th></tr></thead>
+            <tbody id="provHistBody"></tbody>
+          </table></div></div>
+        </div>
+        <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('provHistModal')">Close</button></div>
+      </div></div>
+
       <section class="page" id="page-apiProviders">
         <div class="page-head"><div><h2>API Providers</h2><div class="breadcrumb"><b>System Master</b> › API Provider Sync</div></div>
-          <div class="head-actions"><button class="btn btn-blue" onclick="loadApiProviders()">Refresh</button><button class="btn btn-purple" onclick="openApiProviderModal(-1)">+ Add Provider</button></div>
+          <div class="head-actions"><button class="btn btn-blue"  onclick="loadApiProviders()">Refresh</button><button class="btn btn-purple" onclick="openApiProviderModal(-1)">+ Add Provider</button></div>
         </div>
         <div class="stats-grid">
           <div class="stat-card dash-metric d-blue"><div class="stat-info"><p>Sync Service</p><h3 id="apSvc">—</h3><span>Background scheduler</span></div><div class="dash-go">↺</div></div>
@@ -765,7 +809,7 @@ Pakistan Jazz
           <tbody id="apBody"></tbody>
         </table></div><div class="table-foot"><div class="info" id="apInfo"></div></div></div>
         <div class="card" style="margin-top:16px">
-          <div class="card-head"><div><h3>Recent Sync Activity</h3><div class="sub">Last 20 sync cycles across all providers.</div></div><div class="head-actions"><button class="btn btn-blue" onclick="loadApiSyncLogs()">Refresh Logs</button></div></div>
+          <div class="card-head"><div><h3>Recent Sync Activity</h3><div class="sub">Last 20 sync cycles across all providers.</div></div><div class="head-actions"><button class="btn btn-blue"  onclick="loadApiSyncLogs()">Refresh Logs</button></div></div>
           <div class="table-wrap"><div class="tscroll"><table>
             <thead><tr><th>Time</th><th>Provider</th><th>Status</th><th>Fetched</th><th>New</th><th>Duplicates</th><th>Failed</th><th>Duration</th><th>Error</th></tr></thead>
             <tbody id="apLogBody"></tbody>
@@ -776,7 +820,7 @@ Pakistan Jazz
       <!-- ========== SYSTEM MASTER: SMPP CONNECTIONS ========== -->
       <section class="page" id="page-smppConnections">
         <div class="page-head"><div><h2>SMPP Connections</h2><div class="breadcrumb"><b>System Master</b> › SMPP Channel</div></div>
-          <div class="head-actions"><button class="btn btn-blue" onclick="loadSmpp()">Refresh</button><button class="btn btn-purple" onclick="openSmppModal(-1)">+ Add Connection</button></div>
+          <div class="head-actions"><button class="btn btn-blue"  onclick="loadSmpp()">Refresh</button><button class="btn btn-purple" onclick="openSmppModal(-1)">+ Add Connection</button></div>
         </div>
         <div class="stats-grid">
           <div class="stat-card dash-metric d-blue"><div class="stat-info"><p>SMPP Service</p><h3 id="smSvc">—</h3><span id="smSvcSub">Connection engine</span></div><div class="dash-go">⇄</div></div>
@@ -786,8 +830,8 @@ Pakistan Jazz
         </div>
         <div class="card" style="margin-bottom:16px">
           <div class="card-head"><div><h3>How this works</h3><div class="sub">SMPP is an additional channel. It runs alongside the HTTP callback and the API Providers sync — all three write into the same SMS records, and none of them affect the others.</div></div></div>
-          <div class="hint"><b>Client mode</b> — Power X connects out to your provider's SMPP server. You need their host, port, system&nbsp;ID and password.<br>
-          <b>Server mode</b> — Power X listens on a port and your carrier connects in. You choose the system&nbsp;ID and password and give them to the carrier, plus this server's IP and the port.<br>
+          <div class="hint"><b>Client mode</b> — WHIZZ SMS connects out to your provider's SMPP server. You need their host, port, system&nbsp;ID and password.<br>
+          <b>Server mode</b> — WHIZZ SMS listens on a port and your carrier connects in. You choose the system&nbsp;ID and password and give them to the carrier, plus this server's IP and the port.<br>
           Reconnection is automatic with backoff. Incoming messages are de-duplicated, so a redelivered message is never counted twice.</div>
         </div>
         <div class="table-wrap"><div class="tscroll"><table>
@@ -795,7 +839,7 @@ Pakistan Jazz
           <tbody id="smBody"></tbody>
         </table></div><div class="table-foot"><div class="info" id="smInfo"></div></div></div>
         <div class="card" style="margin-top:16px">
-          <div class="card-head"><div><h3>Recent SMPP Activity</h3><div class="sub">Bind, unbind, reconnect, delivery and error events.</div></div><div class="head-actions"><button class="btn btn-blue" onclick="loadSmppLogs()">Refresh Logs</button></div></div>
+          <div class="card-head"><div><h3>Recent SMPP Activity</h3><div class="sub">Bind, unbind, reconnect, delivery and error events.</div></div><div class="head-actions"><button class="btn btn-blue"  onclick="loadSmppLogs()">Refresh Logs</button></div></div>
           <div class="table-wrap"><div class="tscroll"><table>
             <thead><tr><th>Time</th><th>Connection</th><th>Event</th><th>Level</th><th>Detail</th><th>Peer</th></tr></thead>
             <tbody id="smLogBody"></tbody>
@@ -836,13 +880,13 @@ Pakistan Jazz
 
       <!-- ========== LIMIT MANAGEMENT ========== -->
       <section class="page" id="page-limitManagement">
-        <div class="page-head"><div><h2>Limit Management</h2><div class="breadcrumb"><b>System Master</b> › Daily Payout Limits (UK Time)</div></div><div class="head-actions"><button class="btn btn-blue" onclick="loadLimitManagement()">Refresh</button></div></div>
+        <div class="page-head"><div><h2>Limit Management</h2><div class="breadcrumb"><b>System Master</b> › Daily Payout Limits (UK Time)</div></div><div class="head-actions"><button class="btn btn-blue"  onclick="loadLimitManagement()">Refresh</button></div></div>
         <div class="card" style="margin-bottom:16px">
           <div class="card-head"><div><h3>Range Daily Limits</h3><div class="sub">Set range-wide daily limit and per-number daily limit. OTPs are never blocked; payout becomes 0 after limit.</div></div></div>
           <div class="table-wrap"><div class="tscroll"><table><thead><tr><th>Range</th><th>Daily Limit</th><th>Per-Number Limit</th><th>Today OTPs</th><th>Paid</th><th>Zeroed</th><th>Action</th></tr></thead><tbody id="lmRangeBody"></tbody></table></div></div>
         </div>
         <div class="card" style="margin-bottom:16px">
-          <div class="card-head"><div><h3>CLI Daily Limits</h3><div class="sub">Set a daily limit per CLI. Counts are combined across all ranges and numbers.</div></div><button class="btn btn-blue btn-sm" onclick="loadLimitManagement()">Refresh</button></div>
+          <div class="card-head"><div><h3>CLI Daily Limits</h3><div class="sub">Set a daily limit per CLI. Counts are combined across all ranges and numbers.</div></div><button class="btn btn-blue"  onclick="loadLimitManagement()">Refresh</button></div>
           <div class="card" style="margin:0 0 12px;padding:14px;background:#F8FAFC!important">
             <div style="font-weight:800;margin-bottom:10px">Manually Add CLI Limit</div>
             <div class="form-grid" style="grid-template-columns:2fr 1fr auto;gap:12px;align-items:end">
@@ -891,7 +935,41 @@ Pakistan Jazz
       <div class="form-group"><label>Rate 7/7</label><input type="text" id="r3" placeholder="0.013 or NA" /></div>
       <div class="form-group"><label>Rate 30/45</label><input type="text" id="r4" placeholder="0.013 or NA" /></div>
     </div>
+    <!-- P19k #4: Provider Rate — ADMIN-INTERNAL, per payment-cycle period (same 1/1, 7/1, 7/7, 30/45 convention).
+         Used ONLY for Real Provider Cost on the admin dashboard; never exposed to Manager/Agent/Client or the Rate Card. -->
+    <div class="form-grid">
+      <div class="form-group"><label>Provider Rate 1/1 <span class="muted" style="font-weight:400">(internal)</span></label><input type="text" id="pr1" placeholder="0.008 or NA" /></div>
+      <div class="form-group"><label>Provider Rate 7/1 <span class="muted" style="font-weight:400">(internal)</span></label><input type="text" id="pr2" placeholder="0.008 or NA" /></div>
+      <div class="form-group"><label>Provider Rate 7/7 <span class="muted" style="font-weight:400">(internal)</span></label><input type="text" id="pr3" placeholder="0.008 or NA" /></div>
+      <div class="form-group"><label>Provider Rate 30/45 <span class="muted" style="font-weight:400">(internal)</span></label><input type="text" id="pr4" placeholder="0.008 or NA" /></div>
+    </div>
+    <div class="form-grid"><div class="form-group"><label>Country</label><input type="text" id="rCountry" placeholder="e.g. Pakistan" /></div><div class="form-group"><label>Provider (reference)</label><input type="text" id="rProvider" placeholder="e.g. Provider 9AFE" /><div class="hint">Reference only — actual connections are managed under SMS Providers / SMPP.</div></div></div>
+    <div class="form-grid"><div class="form-group"><label>Currency Rate</label><input type="text" id="rCurRate" placeholder="e.g. 278.50" /></div><div class="form-group"><label>CLI Limit</label><input type="text" id="rCli" placeholder="e.g. 100/day" /></div></div>
+    <div class="form-grid"><div class="form-group"><label>Range Start</label><input type="text" id="rStart" placeholder="92300123456" /></div><div class="form-group"><label>Range End</label><input type="text" id="rEnd" placeholder="92300999999" /></div><div class="form-group"><label>Status</label><select id="rStatus"><option>Active</option><option>Inactive</option></select></div></div>
     <div class="form-group"><label>Memo</label><input type="text" id="rMemo" placeholder="Optional note" /></div>
+    <!-- PART 4: AGENT SELF-ALLOCATION LIMITS (per-range) -->
+    <div style="border-top:1px solid var(--border2);padding-top:14px;margin-top:10px">
+      <h4 style="margin:0 0 10px 0;font-size:13.5px;color:var(--accent,#30abed)">Agent Self-Allocation Settings</h4>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="switch"><input type="checkbox" id="rSelfAllocEnabled" checked/> Enable Agent Self-Allocation</label>
+          <div class="hint">Allow Agents to self-allocate numbers from this range.</div>
+        </div>
+        <div class="form-group">
+          <label>Self-Allocation Limit (numbers)</label>
+          <input type="number" id="rSelfAllocMax" min="1" max="10000" value="100" placeholder="100"/>
+          <div class="hint">Max numbers an Agent can hold in this range via self-allocation.</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Allowed Billing Periods</label>
+        <select id="rSelfAllocPeriods">
+          <option value="weekly,monthly">Weekly &amp; Monthly</option>
+          <option value="weekly">Weekly Only</option>
+          <option value="monthly">Monthly Only</option>
+        </select>
+      </div>
+    </div>
   </div>
   <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('rateModal')">Cancel</button><button class="btn btn-purple" onclick="saveRate()">Save Rate</button></div>
 </div></div>
@@ -902,12 +980,13 @@ Pakistan Jazz
   <div class="modal-body">
     <div class="form-grid">
       <div class="form-group"><label>Connection Name <span class="req">*</span></label><input type="text" id="smName" placeholder="e.g. Provider-A" /></div>
+        <div class="form-group"><label>Provider Record <span class="hint-inline">(Providers page link)</span></label><input type="text" id="smProv" placeholder="same name = auto-link" list="provNames2"/><datalist id="provNames2"></datalist></div>
       <div class="form-group"><label>Status</label><select id="smActive"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
     </div>
     <div class="form-group"><label>Mode <span class="req">*</span></label>
       <select id="smMode" onchange="smModeChange()">
-        <option value="client">Client — Power X connects out to the provider</option>
-        <option value="server">Server — the carrier connects in to Power X</option>
+        <option value="client">Client — WHIZZ SMS connects out to the provider</option>
+        <option value="server">Server — the carrier connects in to WHIZZ SMS</option>
       </select>
       <div class="hint" id="smModeHint"></div>
     </div>
@@ -956,7 +1035,7 @@ Pakistan Jazz
     <div class="form-group"><label>Notes</label><input type="text" id="smNotes" placeholder="optional" /></div>
     <div class="hint" id="smTestResult" style="margin-top:6px"></div>
   </div>
-  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('smppModal')">Cancel</button><button class="btn btn-green" onclick="testSmpp()">Test Connection</button><button class="btn btn-purple" onclick="saveSmpp()">Save Connection</button></div>
+  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('smppModal')">Cancel</button><button class="btn btn-green"  onclick="testSmpp()">Test Connection</button><button class="btn btn-purple" onclick="saveSmpp()">Save Connection</button></div>
 </div></div>
 
 <div class="modal-overlay" id="smppSendModal"><div class="modal" style="max-width:520px">
@@ -976,6 +1055,7 @@ Pakistan Jazz
   <div class="modal-body">
     <div class="form-grid">
       <div class="form-group"><label>Provider Name <span class="req">*</span></label><input type="text" id="apName" placeholder="e.g. Lamix" /></div>
+      <div class="form-group"><label>Provider Record <span class="hint-inline">(Providers page link)</span></label><input type="text" id="apProv" placeholder="same name = auto-link" list="provNames"/><datalist id="provNames"></datalist></div>
       <div class="form-group"><label>Status</label><select id="apActiveSel"><option value="1">Enabled</option><option value="0">Disabled</option></select></div>
     </div>
     <div class="form-group"><label>Base URL <span class="req">*</span></label><input type="text" id="apUrl" placeholder="http://51.77.216.195/crapi/lamix/viewstats" /><div class="hint">Full endpoint URL without query parameters.</div></div>
@@ -1015,7 +1095,7 @@ Pakistan Jazz
       <div class="form-group"><label>Overlap Window (seconds)</label><input type="number" id="apOverlap" value="30" min="0" max="3600" /><div class="hint">Re-checks this many seconds back so no SMS is missed. Duplicates are blocked automatically.</div></div>
       <div class="form-group"><label>Response Array Path</label><input type="text" id="apRecPath" placeholder="data" /><div class="hint">Where the records array is, e.g. <b>data</b>.</div></div>
     </div>
-    <div class="section-title" style="margin:14px 0 8px">Field Mapping <span class="muted" style="font-weight:500">(provider field → Power X field)</span></div>
+    <div class="section-title" style="margin:14px 0 8px">Field Mapping <span class="muted" style="font-weight:500">(provider field → WHIZZ SMS field)</span></div>
     <div class="form-grid">
       <div class="form-group"><label>Number</label><input type="text" id="apMapNumber" placeholder="num" /></div>
       <div class="form-group"><label>CLI / Sender</label><input type="text" id="apMapCli" placeholder="cli" /></div>
@@ -1026,11 +1106,11 @@ Pakistan Jazz
     </div>
     <div class="form-grid">
       <div class="form-group"><label>Payout (optional)</label><input type="text" id="apMapPayout" placeholder="payout" /><div class="hint">Used only as an indicator. Payout is always calculated from panel rate cards; a provider payout of 0 marks the SMS non-payable.</div></div>
-      <div class="form-group"><label>Unique ID (optional)</label><input type="text" id="apMapRef" placeholder="Leave empty if not provided" /><div class="hint">If the provider sends no id, Power X generates a fingerprint to prevent duplicates.</div></div>
+      <div class="form-group"><label>Unique ID (optional)</label><input type="text" id="apMapRef" placeholder="Leave empty if not provided" /><div class="hint">If the provider sends no id, WHIZZ SMS generates a fingerprint to prevent duplicates.</div></div>
     </div>
     <div class="hint" id="apTestResult" style="margin-top:12px"></div>
   </div>
-  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('apiProviderModal')">Cancel</button><button class="btn btn-green" onclick="testApiProvider()">Test Connection</button><button class="btn btn-purple" onclick="saveApiProvider()">Save Provider</button></div>
+  <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal('apiProviderModal')">Cancel</button><button class="btn btn-green"  onclick="testApiProvider()">Test Connection</button><button class="btn btn-purple" onclick="saveApiProvider()">Save Provider</button></div>
 </div></div>
 
 <!-- ============ SMART DIVIDE MODAL ============ -->
@@ -1067,7 +1147,7 @@ Pakistan Jazz
 /* auth guard — management uses admin credentials */
 if(window.API){ API.guard('admin'); }
 window.PX_PANEL_MODE='management';
-const MANAGEMENT_ALLOWED_PAGES=new Set(['import','testImport','rates','cliLimit','limitManagement','carrierIntegration','apiProviders','smppConnections','systemLogs','backupManagement']);
+const MANAGEMENT_ALLOWED_PAGES=new Set(['import','testImport','rates','cliLimit','limitManagement','carrierIntegration','apiProviders','smppConnections','systemLogs','backupManagement','providers']);
 function normalizePanelPage(id){ id=String(id||'rates'); return MANAGEMENT_ALLOWED_PAGES.has(id)?id:'rates'; }
 function applyPanelSplitUi(){ /* Management Panel keeps maintenance/config modules only. */ }
 /* =============== NAV =============== */
@@ -1096,7 +1176,7 @@ function openSidebar(){ document.getElementById('sidebar').classList.add('show')
 function closeSidebar(){ document.getElementById('sidebar').classList.remove('show'); document.getElementById('overlay').classList.remove('show'); }
 function toggleFull(){ if(!document.fullscreenElement){document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();}else{document.exitFullscreen&&document.exitFullscreen();} }
 function closeModal(id){const el=document.getElementById(id);if(el)el.classList.remove('show');}
-function logout(){ if(confirm('Do you want to logout?')){ if(window.API&&API.logout){API.logout();}else{try{sessionStorage.clear();['ms_token','ms_role','ms_user','ms_name'].forEach(k=>localStorage.removeItem(k));}catch(e){} window.location.href='/panel-login';} } }
+function logout(){ if(confirm('Do you want to logout?')){ if(window.API&&API.logout){API.logout();}else{try{sessionStorage.clear();['ms_token','ms_role','ms_user','ms_name'].forEach(k=>localStorage.removeItem(k));}catch(e){} window.location.href='/login';} } }
 function tick(){const d=new Date();const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];const p=n=>String(n).padStart(2,'0');
   document.getElementById('clock').textContent=days[d.getDay()]+', '+d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
 setInterval(tick,1000);tick();
@@ -1187,19 +1267,30 @@ function renderRates(){
   let rows=(ratesData||[]).filter(r=>(r.name||'').toLowerCase().includes(q)||(r.test_number||'').includes(q));
   const pag=API.paginateRows('adminRates',rows,len,'ratesInfo',renderRates);const total=pag.total;rows=pag.rows;
   document.getElementById('ratesBody').innerHTML=rows.map(r=>`<tr>
-    <td><b>${r.name}</b></td><td class="muted">${r.prefix||'—'}</td><td>${r.test_number||'—'}</td><td><span class="tag tag-green">${r.currency}</span></td><td><span class="tag tag-blue">${paymentTypeText(r.payment_type)}</span></td>
-    <td>${fmtRate(r.rate_1_1)}</td><td>${fmtRate(r.rate_7_1)}</td><td>${fmtRate(r.rate_7_7)}</td><td>${fmtRate(r.rate_30_45)}</td><td class="muted">${r.memo||'—'}</td>
-    <td style="white-space:nowrap"><button class="btn btn-amber btn-sm" onclick="openRateModal(${r.id})">Set Rate</button>
+    <td data-label="Range"><b>${r.name}</b></td><td data-label="Prefix" class="muted">${r.prefix||'—'}</td><td data-label="Country" class="muted">${r.country||'—'}</td><td data-label="Provider" class="muted">${r.provider||'—'}</td><td data-label="Test Number" class="muted">${(()=>{const t=String(r.test_number||'').trim();if(!t)return '—';const parts=t.split(/[,]/).map(s=>s.trim()).filter(Boolean);return parts[0]+(parts.length>1?' +'+(parts.length-1)+' more':'');})()}</td></td><td data-label="Currency"><span class="tag tag-green">${r.currency}</span></td><td data-label="Pay"><span class="tag tag-blue">${(window.GX&&GX.payterm?GX.payterm(r.payment_type):r.payment_type)||'7/1'}</span></td>
+    <td data-label="1/1">${fmtRate(r.rate_1_1)}</td><td data-label="7/1">${fmtRate(r.rate_7_1)}</td><td data-label="7/7">${fmtRate(r.rate_7_7)}</td><td data-label="30/45">${fmtRate(r.rate_30_45)}</td><td data-label="Prov. Rate" class="muted" style="font-size:11.5px;white-space:nowrap" title="Provider Rate (admin-internal): 1/1 · 7/1 · 7/7 · 30/45">${[r.provider_rate_1_1,r.provider_rate_7_1,r.provider_rate_7_7,r.provider_rate_30_45].map(v=>(v&&v!=='NA')?v:'—').join(' · ')}</td><td data-label="Status">${(r.status||'Active')==='Active'?'<span class="tag tag-green">Active</span>':'<span class="tag tag-red">'+(r.status||'Active')+'</span>'}</td><td data-label="Memo" class="muted">${r.memo||'—'}</td>
+    <td style="white-space:nowrap"><button type="button" class="gx-btn gx-amber"  onclick="openRateModal(${r.id})" data-tip="Set rate" title="Set rate" aria-label="Set rate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg></button>
     <button class="icon-btn btn-red" onclick="delRate(${r.id})"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button></td></tr>`).join('');
   document.getElementById('ratesInfo').textContent=`Showing ${rows.length} of ${total} ranges`;
 }
 let editRateId=-1;
-function openRateModal(id){editRateId=id;document.getElementById('rateModalTitle').textContent=id<0?'Add Range':'Set Range Rate';
-  const r=id<0?{name:'',prefix:'',test_number:'',currency:'USD',payment_type:'weekly',rate_1_1:'',rate_7_1:'',rate_7_7:'',rate_30_45:'',memo:''}:(ratesData.find(x=>x.id===id)||{});
-  rName.value=r.name||'';rPrefix.value=r.prefix||'';rTest.value=r.test_numbers||r.test_number||'';rCur.value=r.currency||'USD';if(document.getElementById('rPaymentType'))rPaymentType.value=r.payment_type||'weekly';r1.value=r.rate_1_1||'';r2.value=r.rate_7_1||'';r3.value=r.rate_7_7||'';r4.value=r.rate_30_45||'';rMemo.value=r.memo||'';
+function openRateModal(id){editRateId=id;document.getElementById('rateModalTitle').textContent=id<0?'Add Range':'Edit Range';
+  const r=id<0?{name:'',prefix:'',test_number:'',currency:'USD',payment_type:'weekly',rate_1_1:'',rate_7_1:'',rate_7_7:'',rate_30_45:'',memo:'',country:'',provider:'',currency_rate:'',cli_limit:'',range_start:'',range_end:'',status:'Active',provider_rate_1_1:'',provider_rate_7_1:'',provider_rate_7_7:'',provider_rate_30_45:''}:(ratesData.find(x=>x.id===id)||{});
+  rName.value=r.name||'';rPrefix.value=r.prefix||'';rTest.value=r.test_numbers||r.test_number||'';rCur.value=r.currency||'USD';if(document.getElementById('rPaymentType'))rPaymentType.value=r.payment_type||'weekly';r1.value=r.rate_1_1||'';r2.value=r.rate_7_1||'';r3.value=r.rate_7_7||'';r4.value=r.rate_30_45||'';rMemo.value=r.memo||'';if(document.getElementById('rCountry')){rCountry.value=r.country||'';rProvider.value=r.provider||'';rCurRate.value=r.currency_rate||'';rCli.value=r.cli_limit||'';rStart.value=r.range_start||'';rEnd.value=r.range_end||'';rStatus.value=r.status||'Active';}
+  /* P19k #4: provider rates (admin-internal) */
+  pr1.value=(r.provider_rate_1_1&&r.provider_rate_1_1!=='NA')?r.provider_rate_1_1:'';pr2.value=(r.provider_rate_7_1&&r.provider_rate_7_1!=='NA')?r.provider_rate_7_1:'';pr3.value=(r.provider_rate_7_7&&r.provider_rate_7_7!=='NA')?r.provider_rate_7_7:'';pr4.value=(r.provider_rate_30_45&&r.provider_rate_30_45!=='NA')?r.provider_rate_30_45:'';
+  const saEn = document.getElementById('rSelfAllocEnabled'); if(saEn) saEn.checked = r.self_alloc_enabled !== undefined ? !!r.self_alloc_enabled : true;
+  const saMax = document.getElementById('rSelfAllocMax'); if(saMax) saMax.value = r.self_alloc_max != null ? r.self_alloc_max : 100;
+  const saPer = document.getElementById('rSelfAllocPeriods'); if(saPer) saPer.value = r.self_alloc_periods || 'weekly,monthly';
   document.getElementById('rateModal').classList.add('show');}
 async function saveRate(){if(!rName.value.trim()){alert('Range name is required.');return;}
-  const body={name:rName.value.trim(),prefix:rPrefix.value.trim(),test_number:rTest.value.trim(),test_numbers:rTest.value.trim(),currency:rCur.value,rate_1_1:r1.value.trim()||'NA',rate_7_1:r2.value.trim()||'NA',rate_7_7:r3.value.trim()||'NA',rate_30_45:r4.value.trim()||'NA',memo:rMemo.value.trim(),payment_type:(document.getElementById('rPaymentType')?.value||'weekly_7_1')};
+  const body={name:rName.value.trim(),prefix:rPrefix.value.trim(),test_number:rTest.value.trim(),test_numbers:rTest.value.trim(),currency:rCur.value,rate_1_1:r1.value.trim()||'NA',rate_7_1:r2.value.trim()||'NA',rate_7_7:r3.value.trim()||'NA',rate_30_45:r4.value.trim()||'NA',memo:rMemo.value.trim(),payment_type:(document.getElementById('rPaymentType')?.value||'weekly_7_1'),country:(rCountry?.value||'').trim(),provider:(rProvider?.value||'').trim(),currency_rate:(rCurRate?.value||'').trim(),cli_limit:(rCli?.value||'').trim(),range_start:(rStart?.value||'').trim(),range_end:(rEnd?.value||'').trim(),status:(rStatus?.value||'Active'),
+    /* P19k #4 */
+    provider_rate_1_1:pr1.value.trim()||'NA',provider_rate_7_1:pr2.value.trim()||'NA',provider_rate_7_7:pr3.value.trim()||'NA',provider_rate_30_45:pr4.value.trim()||'NA',
+    self_alloc_enabled: document.getElementById('rSelfAllocEnabled')?.checked ? 1 : 0,
+    self_alloc_max: parseInt(document.getElementById('rSelfAllocMax')?.value, 10) || 100,
+    self_alloc_periods: document.getElementById('rSelfAllocPeriods')?.value || 'weekly,monthly'
+  };
   try{ if(editRateId<0) await API.post('/ranges',body); else await API.put('/ranges/'+editRateId,body); closeModal('rateModal'); loadRates(); }catch(e){ alert('❌ '+e.message); }
 }
 async function importRangeTestBulkFile(){
@@ -1266,8 +1357,8 @@ function renderAlloc(){
     <td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <select id="am${r._i}" style="width:auto;padding:7px 9px">${managers.map(m=>`<option>${m}</option>`).join('')}</select>
       <input type="number" class="allocate-num" placeholder="Qty" id="al${r._i}"/>
-      <button class="btn btn-green btn-sm" onclick="allocRow(${r._i})">Allocate</button></div></td>
-    <td><div style="display:flex;gap:6px;align-items:center"><input type="number" class="allocate-num" placeholder="Qty" id="ul${r._i}"/><button class="btn btn-red btn-sm" onclick="unallocRow(${r._i})">Unallocate</button></div></td>
+      <button type="button" class="gx-btn gx-green"  onclick="allocRow(${r._i})" data-tip="Allocate" title="Allocate" aria-label="Allocate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg></button></div></td>
+    <td><div style="display:flex;gap:6px;align-items:center"><input type="number" class="allocate-num" placeholder="Qty" id="ul${r._i}"/><button type="button" class="gx-btn gx-amber"  onclick="unallocRow(${r._i})" data-tip="Unallocate" title="Unallocate" aria-label="Unallocate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg></button></div></td>
   </tr>`).join('');
   document.getElementById('allocInfo').textContent=`Showing ${rows.length} of ${total} ranges`;
 }
@@ -1422,43 +1513,119 @@ function downloadRangeTemplate(){
   const csv='Range,Prefix,Test Number,Currency,Payment Type,1/1,7/1,7/7,30/45,Memo\nNigeria MS 01,,,USD,weekly,NA,0.01,NA,0.01,\nMTN Nigeria,,,USD,daily,NA,0.01,NA,0.01,';
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='ranges-import-template.csv';a.click();URL.revokeObjectURL(a.href);
 }
+function extractNumbersFromText(text) {
+  if (!text) return [];
+  text = String(text).replace(/^\uFEFF/, "");
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const s = line.trim();
+    if (!s) continue;
+    const cells = s.includes("\t") || s.includes(";") || s.includes(",") ? s.split(/[\t,;]+/) : [s];
+    for (const cell of cells) {
+      const raw = cell.replace(/^[\"']+|[\"']+$/g, "").trim();
+      if (!raw) continue;
+      const spaceTokens = raw.split(/\s+/).filter(Boolean);
+      if (spaceTokens.length > 1 && spaceTokens.every(t => t.replace(/\D/g, "").length >= 5)) {
+        for (const t of spaceTokens) {
+          const hasPlus = t.startsWith("+");
+          const d = t.replace(/\D/g, "");
+          if (d.length >= 5) {
+            const num = (hasPlus ? "+" : "") + d;
+            if (!seen.has(num)) { seen.add(num); out.push(num); }
+          }
+        }
+        continue;
+      }
+      const hasPlus = raw.startsWith("+");
+      const d = raw.replace(/\D/g, "");
+      if (d.length >= 5) {
+        const num = (hasPlus ? "+" : "") + d;
+        if (!seen.has(num)) { seen.add(num); out.push(num); }
+      }
+    }
+  }
+  return out;
+}
 async function doImport(inputId){const f=document.getElementById(inputId).files[0];
-  if(!f){alert('Please select a file first.');return;}
-  if(inputId==='numFile'){
-    const rg=document.getElementById('importRange').value; if(!rg){alert('Enter the range name where numbers should be added.');return;}
+  if(!f){alert("Please select a file first.");return;}
+  if(inputId==="numFile"){
+    const rg=document.getElementById("importRange").value; if(!rg){alert("Enter the range name where numbers should be added.");return;}
+    const isExcel = /\.(xlsx|xls)$/i.test(f.name);
+    if (isExcel || f.size > 400 * 1024) {
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("range_name", rg);
+      fd.append("file_name", f.name);
+      const prov = document.getElementById("importProvider")?.value;
+      if (prov) fd.append("provider", prov);
+      try {
+        const r = await API.upload("/numbers/import-file", fd);
+        if (prov) await assignRangeProvider(rg, prov);
+        if (r.background && r.job) { showImportJob(r.job); pollImportJob(r.job.job_id); }
+      } catch (e) { alert("❌ " + e.message); }
+      return;
+    }
     const text=await f.text();
-    const nums=text.split(/[\s,;]+/).map(x=>x.trim()).filter(x=>/^\+?\d{5,}$/.test(x));
-    if(!nums.length){alert('No valid numbers found in the file.');return;}
-    try{const r=await API.post('/numbers/import',{range_name:rg,numbers:nums,file_name:f.name});if(r.background&&r.job){showImportJob(r.job);pollImportJob(r.job.job_id);}else{alert(`✅ ${r.inserted||0} numbers imported. Skipped: ${r.skipped||0}`);await loadRates();await loadNumbers();}}catch(e){alert('❌ '+e.message);}
+    const nums=extractNumbersFromText(text);
+    if(!nums.length){alert("No valid numbers found in the file.");return;}
+    try{
+      const r=await API.post("/numbers/import",{range_name:rg,numbers:nums,file_name:f.name});
+      await assignRangeProvider(rg,document.getElementById("importProvider")?.value);
+      if(r.background&&r.job){showImportJob(r.job);pollImportJob(r.job.job_id);}
+      else{alert(`✅ ${r.inserted||0} numbers imported. Skipped: ${r.skipped||0}`);await loadRates();await loadNumbers();}
+    }catch(e){alert("❌ "+e.message);}
   } else {
     try{
       const text=await f.text();
       const rows=parseTableText(text);
-      if(!rows.length){alert('No range rows found. Use CSV/TSV template.');return;}
-      const r=await API.post('/ranges/import',{ranges:rows,update_existing:true});
+      if(!rows.length){alert("No range rows found. Use CSV/TSV template.");return;}
+      const r=await API.post("/ranges/import",{ranges:rows,update_existing:true});
       alert(`✅ Ranges imported. Inserted: ${r.inserted||0}, Updated: ${r.updated||0}, Skipped: ${r.skipped||0}`);
-      document.getElementById('rangeFile').value='';document.getElementById('rangeFileInfo').innerHTML='';await loadRates();
-    }catch(e){alert('❌ '+e.message)}
+      document.getElementById("rangeFile").value="";document.getElementById("rangeFileInfo").innerHTML="";await loadRates();
+    }catch(e){alert("❌ "+e.message)}
   }
 }
 async function bulkImportTxtFiles(){
-  const files=[...(document.getElementById('bulkTxtFiles').files||[])];
-  if(!files.length){alert('Select TXT files first.');return;}
-  const createMissing=document.getElementById('bulkCreateMissingRanges').checked;
+  const files=[...(document.getElementById("bulkTxtFiles").files||[])];
+  if(!files.length){alert("Select TXT files first.");return;}
+  const createMissing=document.getElementById("bulkCreateMissingRanges").checked;
   let started=0,failed=0;
   for(const f of files){
-    const rangeName=f.name.replace(/\.[^.]+$/,'').trim();
+    const rangeName=f.name.replace(/\.[^.]+$/,"").trim();
+    const isExcel = /\.(xlsx|xls)$/i.test(f.name);
+    if (isExcel || f.size > 400 * 1024) {
+      try {
+        if(createMissing && !(ratesData||[]).some(r=>String(r.name).toLowerCase()===rangeName.toLowerCase())){
+          await API.post("/ranges/import",{ranges:[{Range:rangeName,Currency:"USD","30/45":"0"}],update_existing:false});
+          await loadRates();
+        }
+        const fd = new FormData();
+        fd.append("file", f);
+        fd.append("range_name", rangeName);
+        fd.append("file_name", f.name);
+        const prov = document.getElementById("bulkImportProvider")?.value;
+        if (prov) fd.append("provider", prov);
+        const r = await API.upload("/numbers/import-file", fd);
+        if (prov) await assignRangeProvider(rangeName, prov);
+        if (r.background && r.job) { showImportJob(r.job); pollImportJob(r.job.job_id); }
+        started++;
+      } catch (e) { console.warn("bulk file failed", f.name, e); failed++; }
+      continue;
+    }
     const text=await f.text();
-    const nums=text.split(/[\s,;]+/).map(x=>x.trim()).filter(x=>/^\+?\d{5,}$/.test(x));
+    const nums=extractNumbersFromText(text);
     if(!rangeName||!nums.length){failed++;continue;}
     try{
       if(createMissing && !(ratesData||[]).some(r=>String(r.name).toLowerCase()===rangeName.toLowerCase())){
-        await API.post('/ranges/import',{ranges:[{Range:rangeName,Currency:'USD','30/45':'0'}],update_existing:false});
+        await API.post("/ranges/import",{ranges:[{Range:rangeName,Currency:"USD","30/45":"0"}],update_existing:false});
         await loadRates();
       }
-      const r=await API.post('/numbers/import',{range_name:rangeName,numbers:nums,file_name:f.name});
+      const r=await API.post("/numbers/import",{range_name:rangeName,numbers:nums,file_name:f.name});
+      await assignRangeProvider(rangeName,document.getElementById("bulkImportProvider")?.value);
       if(r.background&&r.job){showImportJob(r.job);pollImportJob(r.job.job_id);} started++;
-    }catch(e){console.warn('bulk file failed',f.name,e);failed++;}
+    }catch(e){console.warn("bulk file failed",f.name,e);failed++;}
   }
   bulkTxtInfo.innerHTML=`Started imports: <b>${started}</b>, Failed/skipped files: <b>${failed}</b>`;
   await loadImportBatches();
@@ -1469,11 +1636,11 @@ const roleMeta={manager:{title:'Managers',crumb:'Managers',singular:'Manager'},a
 function buildUserPage(role){const m=roleMeta[role];
   document.getElementById('page-'+role+'s').innerHTML=`
   <div class="page-head"><div><h2>${m.title}</h2><div class="breadcrumb"><b>Users Master</b> › ${m.crumb}</div></div>
-    <div class="head-actions"><button class="btn btn-blue" onclick="openUserModal('${role}',-1)">+ Add</button><button class="btn btn-red" onclick="deleteSelectedUsers('${role}')">🗑 Delete</button></div></div>
+    <div class="head-actions"><button class="btn btn-blue"  onclick="openUserModal('${role}',-1)">+ Add</button><button type="button" class="gx-btn danger"  onclick="deleteSelectedUsers('${role}')" data-tip="Delete" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></button></div></div>
   <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div style="font-weight:600;margin-bottom:12px">MANAGE ${m.title.toUpperCase()}</div>
     <div class="table-controls"><div class="tc-left"><label>Show Records:</label>
-      <select id="${role}Len" onchange="renderUsers('${role}')"><option>10</option><option selected>25</option><option>50</option><option>100</option><option value="All">All</option></select>
-      <div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue">CSV</button><button class="btn btn-green">Excel</button></div></div>
+      <select id="${role}Len" onchange="renderUsers('${role}')"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>
+      <div class="exp-btns"><button class="btn btn-blue" >Copy</button><button class="btn btn-blue" >CSV</button><button class="btn btn-green" >Excel</button></div></div>
       <div class="tc-right"><label>Search:</label><input type="text" id="${role}Search" oninput="renderUsers('${role}')" placeholder="Search..."/></div></div></div>
   <div class="table-wrap"><div class="tscroll"><table>
     <thead><tr><th><input type="checkbox" onclick="toggleAllUsers('${role}',this)"/></th><th>Username</th><th>Name</th><th>Email</th><th>Contact</th><th>Skype</th><th>Active</th><th>Action</th></tr></thead>
@@ -1544,15 +1711,15 @@ function aggregate(records, groupKey){
   records.forEach(r=>{const k=r[groupKey];if(!map[k])map[k]={key:k,sms:0,otp:0,rec:r};map[k].sms+=r.sms;map[k].otp+=r.otp;});
   return Object.values(map);
 }
-function expBtns(){return `<div class="exp-btns"><button class="btn btn-blue">Copy</button><button class="btn btn-blue">CSV</button><button class="btn btn-green">Excel</button></div>`;}
+function expBtns(){return `<div class="exp-btns"><button class="btn btn-blue" >Copy</button><button class="btn btn-blue" >CSV</button><button class="btn btn-green" >Excel</button></div>`;}
 
 /* ---- SMS Report (summary) ---- */
 function buildSmsReport(){
   document.getElementById('page-smsReport').innerHTML=`
   <div class="page-head"><div><h2>SMS Report</h2><div class="breadcrumb"><b>CDR Stats</b> › SMS Report</div></div></div>
-  <div class="toolbar"><div class="filter-row"><label>From</label><input type="date" id="srFrom"/><label>To</label><input type="date" id="srTo"/><button class="btn btn-red" onclick="renderSmsReport()">Filter</button><button class="btn btn-ghost" onclick="srFrom.value=todayStr();srTo.value=todayStr();srSearch.value='';renderSmsReport()">Today</button></div></div>
+  <div class="toolbar"><div class="filter-row"><label>From</label><input type="date" id="srFrom"/><label>To</label><input type="date" id="srTo"/><button class="btn btn-red"  onclick="renderSmsReport()">Filter</button><button class="btn btn-ghost"  onclick="srFrom.value=todayStr();srTo.value=todayStr();srSearch.value='';renderSmsReport()">Today</button></div></div>
   <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div class="table-controls"><div class="tc-left"><label>Show Records:</label>
-    <select id="srLen" onchange="renderSmsReport()"><option>10</option><option selected>25</option><option>50</option><option value="All">All</option></select>${expBtns()}</div>
+    <select id="srLen" onchange="renderSmsReport()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>${expBtns()}</div>
     <div class="tc-right"><label>Search:</label><input type="text" id="srSearch" oninput="renderSmsReport()" placeholder="Search..."/></div></div></div>
   <div class="table-wrap"><div class="tscroll"><table>
     <thead><tr><th>Date</th><th>Manager</th><th>Range</th><th>Number</th><th>CLI</th><th>Payout Rate</th><th>SMS (Message Body)</th></tr></thead><tbody id="srBody"></tbody></table></div>
@@ -1595,12 +1762,12 @@ function buildSmsDetail(){
       <label><input type="checkbox" id="sdUseUser" style="width:auto" onchange="toggleDetailFilters()"> Manager</label>
       <select id="sdUser" disabled onchange="renderSmsDetail()"><option value="">All Managers</option></select>
       <button class="btn btn-red" onclick="renderSmsDetail()">Apply Filter</button>
-      <button class="btn btn-ghost" onclick="sdReset()">Reset</button>
+      <button class="btn btn-ghost"  onclick="sdReset()">Reset</button>
     </div>
     <div class="hint">Filters are combinable. The report uses AND logic across all enabled filters.</div>
   </div>
   <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div class="table-controls"><div class="tc-left"><label>Show Records:</label>
-    <select id="sdLen" onchange="renderSmsDetail()"><option>10</option><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>10000</option><option value="All">All</option></select>${expBtns()}</div>
+    <select id="sdLen" onchange="renderSmsDetail()"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>${expBtns()}</div>
     <div class="tc-right"><label>Search:</label><input type="text" id="sdSearch" oninput="renderSmsDetail()" placeholder="Search..."/></div></div></div>
   <div class="table-wrap"><div class="tscroll"><table>
     <thead id="sdHead"></thead><tbody id="sdBody"></tbody></table></div>
@@ -1668,9 +1835,9 @@ function buildEntityStats(kind){
   document.getElementById('page-'+kind+'Stats').innerHTML=`
   <div class="page-head"><div><h2>${titles[kind]}</h2><div class="breadcrumb"><b>CDR Stats</b> › ${titles[kind]}</div></div></div>
   <div class="stats-grid" id="${kind}Totals"></div>
-  <div class="toolbar"><div class="filter-row"><label>From</label><input type="date" id="${kind}From"/><label>To</label><input type="date" id="${kind}To"/>${filterHtml}<button class="btn btn-red" onclick="renderEntityStats('${kind}')">Filter</button><button class="btn btn-ghost" onclick="entReset('${kind}')">Reset</button></div></div>
+  <div class="toolbar"><div class="filter-row"><label>From</label><input type="date" id="${kind}From"/><label>To</label><input type="date" id="${kind}To"/>${filterHtml}<button class="btn btn-red"  onclick="renderEntityStats('${kind}')">Filter</button><button class="btn btn-ghost"  onclick="entReset('${kind}')">Reset</button></div></div>
   <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div class="table-controls"><div class="tc-left"><label>Show Records:</label>
-    <select id="${kind}SLen" onchange="renderEntityStats('${kind}')"><option>10</option><option selected>25</option><option>50</option><option value="All">All</option></select>${expBtns()}</div>
+    <select id="${kind}SLen" onchange="renderEntityStats('${kind}')"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>${expBtns()}</div>
     <div class="tc-right"><label>Search:</label><input type="text" id="${kind}SSearch" oninput="renderEntityStats('${kind}')" placeholder="Search..."/></div></div></div>
   <div class="table-wrap"><div class="tscroll"><table>
     <thead><tr><th>${roleMeta[kind].singular}</th>${extraCols}<th>Total SMS</th><th>Payment ($)</th></tr></thead><tbody id="${kind}SBody"></tbody></table></div>
@@ -1728,8 +1895,8 @@ function buildDrillStats(kind){
       <label>From</label><input type="date" id="${kind}From"/><label>To</label><input type="date" id="${kind}To"/>
       <select id="${kind}FMgr" onchange="drillMgrChange('${kind}')"><option value="">Filter Manager</option>${managers.map(m=>`<option>${m}</option>`).join('')}</select>
       <select id="${kind}FAgt" onchange="renderDrillStats('${kind}')"><option value="">Filter Agent</option></select>
-      <button class="btn btn-red" onclick="renderDrillStats('${kind}')">Filter</button>
-      <button class="btn btn-ghost" onclick="drillReset('${kind}')">Reset</button>
+      <button class="btn btn-red"  onclick="renderDrillStats('${kind}')">Filter</button>
+      <button class="btn btn-ghost"  onclick="drillReset('${kind}')">Reset</button>
     </div>
     <div id="${kind}DrillSection">
       <div class="section-title">Hierarchy (click to drill down)</div>
@@ -1737,7 +1904,7 @@ function buildDrillStats(kind){
     </div>
   </div>
   <div class="table-wrap" style="padding:16px 18px;margin-top:0"><div class="table-controls"><div class="tc-left"><label>Show Records:</label>
-    <select id="${kind}SLen" onchange="renderDrillStats('${kind}')"><option>10</option><option selected>25</option><option>50</option><option value="All">All</option></select>${expBtns()}</div>
+    <select id="${kind}SLen" onchange="renderDrillStats('${kind}')"><option selected>25</option><option>50</option><option>100</option><option>500</option><option>1000</option><option>5000</option><option>10000</option><option value="All">All</option></select>${expBtns()}</div>
     <div class="tc-right"><label>Search:</label><input type="text" id="${kind}SSearch" oninput="renderDrillStats('${kind}')" placeholder="Search..."/></div></div></div>
   <div class="table-wrap"><div class="tscroll"><table>
     <thead><tr><th>${kind==='range'?'Range':'Number'}</th><th>Manager</th><th>Agent</th><th>Client</th><th>Total SMS</th><th>Payment ($)</th></tr></thead>
@@ -1912,7 +2079,7 @@ function renderLimitManagement(){
       <td class="cell-money">${Number(r.today_otps||0).toLocaleString()}</td>
       <td style="color:#047857;font-weight:800">${Number(r.paid||0).toLocaleString()}</td>
       <td><span class="tag tag-gray">${Number(r.zeroed||0).toLocaleString()}</span></td>
-      <td><button class="btn btn-amber btn-sm" onclick="saveRangeLimits(${r.range_id})">Save</button></td>
+      <td><button type="button" class="gx-btn gx-green"  onclick="saveRangeLimits(${r.range_id})" data-tip="Save" title="Save" aria-label="Save"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button></td>
     </tr>`).join('')||`<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No ranges found</td></tr>`;
   }
   const q=(document.getElementById('lmCliSearch')?.value||'').toLowerCase();
@@ -1925,7 +2092,7 @@ function renderLimitManagement(){
       <td class="cell-money">${Number(c.today_otps||0).toLocaleString()}</td>
       <td style="color:#047857;font-weight:800">${Number(c.paid||0).toLocaleString()}</td>
       <td><span class="tag tag-gray">${Number(c.zeroed||0).toLocaleString()}</span></td>
-      <td><button class="btn btn-amber btn-sm" onclick="saveCliLimit('${String(c.cli).replace(/'/g,"\'")}',${i})">Save</button></td>
+      <td><button type="button" class="gx-btn gx-green"  onclick="saveCliLimit('${String(c.cli).replace(/'/g,"\'")}',${i})" data-tip="Save" title="Save" aria-label="Save"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button></td>
     </tr>`).join('')||`<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No CLI records found</td></tr>`;
   }
   const info=document.getElementById('lmInfo'); if(info) info.textContent=`${(limitOverview.clis||[]).length} CLI senders · Reporting timezone: UK / Europe-London`;
@@ -1956,8 +2123,9 @@ async function loadDashboard(){
     const vals=[d.sms_today,d.sms_yesterday,d.sms_7d,money(d.payout_month)];
     cards.forEach((c,i)=>{ if(vals[i]!==undefined)c.textContent=String(vals[i]); });
     const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    buildBarChart('weekChart',(d.daily7||[]).map(x=>({l:days[new Date(x.date).getDay()]||'',v:x.count||0})));
+    buildBarChart('weekChart',(d.daily7||[]).slice().reverse().map(x=>({l:days[new Date(x.date).getDay()]||'',v:x.count||0})));
     buildBarChart('monthChart',[{l:'This Month',v:d.sms_month||0}]);
+    const moneyCard=[...document.querySelectorAll('#page-dashboard .stat-card .stat-info')].find(x=>x.textContent.includes('Money This Month'));if(moneyCard)moneyCard.querySelector('h3').textContent='$ '+pay3(d.payout_month||0);
     const recentCard=[...document.querySelectorAll('#page-dashboard .card')].find(c=>c.textContent.includes('Recent Activity'));
     if(recentCard){
       const head=recentCard.querySelector('.card-head')?.outerHTML||'';
@@ -1966,7 +2134,7 @@ async function loadDashboard(){
   }catch(e){ console.warn(e); }
 }
 function rebuildAllocData(){
-  allocData=(ratesData||[]).map(r=>{const nums=(numbersData||[]).filter(n=>n.range_id===r.id);const alloc=nums.filter(n=>n.manager_id).length;return {id:r.id,range:r.name,total:nums.length,alloc,avail:nums.length-alloc,rate:r.rate_30_45||r.rate_7_1||'NA'};});
+  allocData=(ratesData||[]).map(r=>{const nums=(numbersData||[]).filter(n=>n.range_id===r.id);const alloc=nums.filter(n=>n.manager_id).length;const cleanR=(r.rate_7_1&&r.rate_7_1!=='NA')?r.rate_7_1:((r.rate_7_7&&r.rate_7_7!=='NA')?r.rate_7_7:((r.rate_30_45&&r.rate_30_45!=='NA')?r.rate_30_45:((r.rate_1_1&&r.rate_1_1!=='NA')?r.rate_1_1:'NA')));return {id:r.id,range:r.name,total:nums.length,alloc,avail:nums.length-alloc,rate:cleanR};});
 }
 async function loadRates(){ try{ ratesData=await API.get('/ranges?include_tests=1'); }catch(e){ ratesData=[]; }
   const liveRanges=(ratesData||[]).map(r=>r.name);
@@ -2028,7 +2196,7 @@ async function loadSystemLogs(){
   try{const rows=await API.get('/logs/activity');const b=document.getElementById('actLogBody');if(b)b.innerHTML=rows.map(r=>`<tr><td>${(r.created_at||'').slice(0,19)}</td><td>${miniEsc(r.username)||'—'}</td><td>${r.role||'—'}</td><td><b>${r.action}</b></td><td>${r.module}</td><td class="msg-body">${miniEsc(r.details)}</td><td>${r.ip||'—'}</td></tr>`).join('')||`<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">No logs</td></tr>`;}catch(e){}
   try{const rows=await API.get('/logs/number-history');const b=document.getElementById('numHistBody');if(b)b.innerHTML=rows.map(r=>`<tr><td>${(r.created_at||'').slice(0,19)}</td><td class="mono">${r.number}</td><td><b>${r.action}</b></td><td>${miniEsc(r.from_owner)}</td><td>${miniEsc(r.to_owner)}</td><td class="msg-body">${miniEsc(r.details)}</td></tr>`).join('')||`<tr><td colspan="6" class="muted" style="text-align:center;padding:20px">No history</td></tr>`;}catch(e){}
   try{const rows=await API.get('/logs/webhooks');const b=document.getElementById('webLogBody');if(b)b.innerHTML=rows.map(r=>`<tr><td>${(r.created_at||'').slice(0,19)}</td><td>${r.status==='success'?'<span class="tag tag-green">Success</span>':'<span class="tag tag-red">Failed</span>'}</td><td class="mono">${r.number}</td><td class="mono">${r.matched_number||'—'}</td><td>${miniEsc(r.cli)}</td><td class="msg-body">${miniEsc(r.message)}</td><td class="msg-body">${miniEsc(r.error)}</td></tr>`).join('')||`<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">No webhooks</td></tr>`;}catch(e){}
-  try{const rows=await API.get('/failed-sms');const b=document.getElementById('failedSmsBody');if(b)b.innerHTML=rows.map(r=>`<tr><td>${(r.created_at||'').slice(0,19)}</td><td class="mono">${r.number}</td><td>${miniEsc(r.cli)}</td><td class="msg-body">${miniEsc(r.message)}</td><td class="msg-body">${miniEsc(r.error)}</td><td>${r.status}</td><td>${r.status==='Pending'?`<button class="btn btn-blue btn-sm" onclick="retryFailedSms(${r.id})">Retry</button> <button class="btn btn-red btn-sm" onclick="ignoreFailedSms(${r.id})">Ignore</button>`:'—'}</td></tr>`).join('')||`<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">No failed SMS</td></tr>`;}catch(e){}
+  try{const rows=await API.get('/failed-sms');const b=document.getElementById('failedSmsBody');if(b)b.innerHTML=rows.map(r=>`<tr><td>${(r.created_at||'').slice(0,19)}</td><td class="mono">${r.number}</td><td>${miniEsc(r.cli)}</td><td class="msg-body">${miniEsc(r.message)}</td><td class="msg-body">${miniEsc(r.error)}</td><td>${r.status}</td><td>${r.status==='Pending'?`<button type="button" class="gx-btn gx-blue"  onclick="retryFailedSms(${r.id})" data-tip="Retry" title="Retry" aria-label="Retry"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button> <button type="button" class="gx-btn danger"  onclick="ignoreFailedSms(${r.id})" data-tip="Ignore" title="Ignore" aria-label="Ignore"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`:'—'}</td></tr>`).join('')||`<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">No failed SMS</td></tr>`;}catch(e){}
 }
 async function retryFailedSms(id){try{await API.post('/failed-sms/'+id+'/retry',{});loadSystemLogs();}catch(e){alert('❌ '+e.message)}}
 async function ignoreFailedSms(id){try{await API.del('/failed-sms/'+id);loadSystemLogs();}catch(e){alert('❌ '+e.message)}}
@@ -2040,7 +2208,7 @@ async function doImportTestNumbers(){
   if(!f){alert('Please select a test numbers file.');return;}
   if(!rangeName){alert('Please select a range.');return;}
   const text=await f.text();
-  const nums=text.split(/[\s,;]+/).map(x=>x.trim()).filter(x=>/^\+?\d{5,}$/.test(x));
+  const nums=extractNumbersFromText(text);
   if(!nums.length){alert('No valid test numbers found in the file.');return;}
   try{
     const r=await API.post('/test-numbers/import',{range_name:rangeName,numbers:nums});
@@ -2098,6 +2266,204 @@ async function loadCarrierSettings(){
     ciInfo.innerHTML=`Endpoint path: <b>${c.endpoint_path||'/api/incoming-sms'}</b> · Current generated URL: <b>${c.generated_callback_url||''}</b>`;
     await loadCarrierWebhookLogs();
   }catch(e){ if(String(e.message||'').includes('locked')||String(e.message||'').includes('Locked')){localStorage.removeItem('carrier_integration_lock');updateCarrierLockView();alert('❌ Wrong carrier integration password.');} else console.warn(e); }
+}
+/* ===== WHIZZ P7: HTTP Integration IPs + Provider Management (manual) ===== */
+function pay3(v){ if(window.GX&&GX.pay3) return GX.pay3(v); let s=String(v??'').replace(/[$,\s]/g,'');const mm=s.match(/-?\d+(?:\.\d+)?/);if(!mm)return'0';const p=mm[0].split('.');if(p.length<2)return p[0];const d=p[1].slice(0,3).replace(/0+$/,'');return d?p[0]+'.'+d:p[0]; }
+async function fillProvDatalists(){
+  try{
+    const resp=await API.get('/providers-info');
+    const rows=(resp&&resp.providers)||[];
+    const names=rows.map(p=>p.name).filter(Boolean);
+    const dl=document.getElementById('provNames'); if(dl) dl.innerHTML=names.map(n=>'<option value="'+n+'">').join('');
+    return rows;
+  }catch(e){ return []; }
+}
+async function loadActivityIps(){
+  try{
+    fillProvDatalists();
+    const rows=await API.get('/activity-ips');
+    const b=document.getElementById('aiBody'); if(!b) return;
+    b.innerHTML=(rows||[]).map(r=>`<tr>
+      <td data-label="Provider">${r.provider_name||'\u2014'}</td>
+      <td data-label="IP Address" class="mono">${r.ip}</td>
+      <td data-label="Status">${r.enabled?'<span class="tag tag-green">Enabled</span>':'<span class="tag tag-gray">Disabled</span>'}</td>
+      <td data-label="Actions" style="white-space:nowrap">
+        <button type="button" class="gx-btn ${r.enabled?'gx-amber':'gx-green'}" onclick="toggleActivityIp(${r.id},${r.enabled?0:1})" data-tip="${r.enabled?'Disable':'Enable'}" title="${r.enabled?'Disable':'Enable'}" aria-label="${r.enabled?'Disable':'Enable'}">${window.GX&&GX.svg?GX.svg('power'):'\u23fb'}</button>
+        <button type="button" class="gx-btn danger" onclick="delActivityIp(${r.id})" data-tip="Delete IP" title="Delete IP" aria-label="Delete IP">${window.GX&&GX.svg?GX.svg('trash'):'\ud83d\uddd1'}</button>
+      </td></tr>`).join('')||'<tr><td colspan="4" class="muted" style="text-align:center;padding:18px">No IP entries yet</td></tr>';
+    const info=document.getElementById('aiInfo'); if(info) info.textContent=`${(rows||[]).length} IP entr(ies)`;
+  }catch(e){ console.warn(e); }
+}
+async function addActivityIp(){
+  const name=(document.getElementById('aiName')?.value||'').trim();
+  const ip=(document.getElementById('aiIp')?.value||'').trim();
+  if(!ip){ alert('IP address required.'); return; }
+  try{ await API.post('/activity-ips',{provider_name:name,ip}); document.getElementById('aiIp').value=''; loadActivityIps(); }
+  catch(e){ alert('\u274c '+e.message); }
+}
+async function toggleActivityIp(id,enable){
+  try{
+    const rows=await API.get('/activity-ips');
+    const r=(rows||[]).find(x=>x.id===id); if(!r) return;
+    await API.put('/activity-ips/'+id,{provider_name:r.provider_name,ip:r.ip,enabled:!!enable});
+    loadActivityIps();
+  }catch(e){ alert('\u274c '+e.message); }
+}
+async function delActivityIp(id){
+  if(!confirm('Delete this IP entry?')) return;
+  try{ await API.del('/activity-ips/'+id); loadActivityIps(); }catch(e){ alert('\u274c '+e.message); }
+}
+/* ---------- Providers (manual-only) ---------- */
+let editProvId=null, provsCache=[], payProv=null, histProv=null;
+async function loadProviders(){
+  try{
+    const resp=await API.get('/providers-info');
+    provsCache=(resp&&resp.providers)||[];
+    const names=provsCache.map(p=>p.name).filter(Boolean);
+    const dl=document.getElementById('provNames'); if(dl) dl.innerHTML=names.map(n=>'<option value="'+n+'">').join('');
+    const ul=document.getElementById('provUnlinked');
+    if(ul){
+      const un=(resp&&resp.unlinked)||[];
+      if(un.length){ ul.style.display='block'; ul.innerHTML='\u2139 In ranges referenced (lekin abhi provider record linked nahi): '+un.map(u=>'<b>'+u.name+'</b> ('+u.ranges+' range'+(u.ranges>1?'s':'')+')').join(', ')+'. Provider tab tak stats bina record ke nahi dikhte \u2014 same naam se + Add Provider banao.'; }
+      else { ul.style.display='none'; ul.innerHTML=''; }
+    }
+    const b=document.getElementById('provBody'); if(!b) return;
+    b.innerHTML=(provsCache||[]).map(p=>{
+      const badges=[
+        p.connections.api?`<span class="tag tag-blue">API</span>`:'',
+        p.connections.smpp?`<span class="tag tag-agt">SMPP</span>`:'',
+        (p.connections.ips&&p.connections.ips.length)?`<span class="tag tag-mgr">HTTP IP \u00d7${p.connections.ips.length}</span>`:''
+      ].filter(Boolean).join(' ');
+      const connTxt=[p.conn_type?p.conn_type:'',badges].filter(Boolean).join(' ');
+      const status=(String(p.status||'Active')==='Inactive')
+        ? '<span class="tag tag-gray">Inactive</span>'
+        : '<span class="tag tag-green">Active</span>';
+      const lp=p.last_payment?`$ ${pay3(p.last_payment.amount)}<div class="muted" style="font-size:11px">${String(p.last_payment.paid_at||'').slice(0,10)}</div>`:'\u2014';
+      const ic=k=>window.GX&&GX.svg?GX.svg(k):'\u2022';
+      return `<tr>
+        <td data-label="Provider"><b>${p.name}</b></td>
+        <td data-label="Connection">${connTxt||'<span class="tag tag-gray">\u2014</span>'}</td>
+        <td data-label="Payment Term">${p.payment_term?(window.GX&&GX.payterm?GX.payterm(p.payment_term):p.payment_term):'\u2014'}</td>
+        <td data-label="Currency">${p.currency||'USD'}</td>
+        <td data-label="Numbers">${(p.stats.numbers||0).toLocaleString()}</td>
+        <td data-label="Messages">${(p.totals.msgs||0).toLocaleString()}</td>
+        <td data-label="Unpaid Payout"><a href="#" onclick="return provPayOpen(${p.id})" class="cell-money" style="text-decoration:underline dotted" title="Payment record karein">$ ${pay3(p.totals.payout_unpaid||0)}</a></td>
+        <td data-label="Last Payment">${lp}</td>
+        <td data-label="Status">${status}</td>
+        <td data-label="Actions" style="white-space:nowrap">
+          <button type="button" class="gx-btn" onclick="provView(${p.id})" data-tip="View details" title="View details" aria-label="View details">${ic('eye')}</button>
+          <button type="button" class="gx-btn gx-blue" onclick='openProvModal(provsCache.find(x=>x.id===${p.id}))' data-tip="Edit" title="Edit" aria-label="Edit">${ic('edit')}</button>
+          <button type="button" class="gx-btn gx-green" onclick="provPayOpen(${p.id})" data-tip="Record payment" title="Record payment" aria-label="Record payment">${ic('dollar')}</button>
+          <button type="button" class="gx-btn danger" onclick="delProvider(${p.id},'${p.name.replace(/'/g,"")}')" data-tip="Delete" title="Delete" aria-label="Delete">${ic('trash')}</button>
+        </td></tr>`;
+    }).join('')||'<tr><td colspan="10" class="muted" style="text-align:center;padding:18px">No providers yet \u2014 + Add Provider se manually shuru karein</td></tr>';
+    const info=document.getElementById('provInfo'); if(info) info.textContent=`${(provsCache||[]).length} provider(s)`;
+  }catch(e){ console.warn(e); }
+}
+function openProvModal(p){
+  editProvId=p&&p.id?p.id:null;
+  document.getElementById('provModalTitle').textContent=editProvId?'Edit Provider':'Add Provider';
+  document.getElementById('pvName').value=(p&&p.name)||'';
+  document.getElementById('pvConn').value=(p&&p.conn_type)||'';
+  document.getElementById('pvTerm').value=(p&&p.payment_term)||'';
+  document.getElementById('pvCurrency').value=(p&&p.currency)||'USD';
+  document.getElementById('pvStatus').value=(p&&String(p.status)==='Inactive')?'Inactive':'Active';
+  document.getElementById('provModal').classList.add('show');
+}
+async function saveProvider(){
+  const body={name:document.getElementById('pvName').value.trim(),conn_type:document.getElementById('pvConn').value,payment_term:document.getElementById('pvTerm').value,currency:document.getElementById('pvCurrency').value,status:document.getElementById('pvStatus').value};
+  if(!body.name){ alert('Provider name required.'); return; }
+  try{
+    if(editProvId) await API.put('/providers-info/'+editProvId,body);
+    else await API.post('/providers-info',body);
+    closeModal('provModal'); loadProviders();
+  }catch(e){ alert('\u274c '+e.message); }
+}
+async function delProvider(id,name){
+  if(!confirm('Remove provider record "'+name+'"? (Payment history delete NAHI hogi; connections/keys untouched)')) return;
+  try{ await API.del('/providers-info/'+id); loadProviders(); }catch(e){ alert('\u274c '+e.message); }
+}
+function provView(id){
+  const p=(provsCache||[]).find(x=>x.id===id); if(!p) return;
+  document.getElementById('provViewTitle').textContent='Provider \u2014 '+p.name;
+  const unpaid=Number(p.totals.payout_unpaid||0);
+  const chip=(l,v,cls)=>'<div class="card" style="min-width:130px;padding:10px 14px"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em">'+l+'</div><div class="'+(cls||'')+'" style="font-weight:750;font-size:16px">'+v+'</div></div>';
+  document.getElementById('provViewChips').innerHTML=
+    chip('Unpaid Payout','$ '+pay3(p.totals.payout_unpaid||0),'cell-money')+
+    chip('Last Payment',p.last_payment?('$ '+pay3(p.last_payment.amount)+'<div class="muted" style="font-size:11px">'+String(p.last_payment.paid_at||'').slice(0,10)+'</div>'):'\u2014')+
+    chip('Status',String(p.status||'Active')==='Inactive'?'<span class="tag tag-gray">Inactive</span>':'<span class="tag tag-green">Active</span>')+
+    chip('Payment Term',p.payment_term?(window.GX&&GX.payterm?GX.payterm(p.payment_term):p.payment_term):'\u2014')+
+    chip('Currency',p.currency||'USD')+
+    chip('Numbers',(p.stats.numbers||0).toLocaleString())+
+    chip('Messages',(p.totals.msgs||0).toLocaleString());
+  const per=[['This Week',p.totals.payout_week],['Previous Week',p.totals.payout_prev_week],['This Month',p.totals.payout_month],['Previous Month',p.totals.payout_prev_month],['Previous 3 Months (excl. this)',p.totals.payout_prev_3m]];
+  const rows=per.filter(x=>Number(x[1])>0).map(x=>'<div class="card" style="min-width:130px;padding:10px 14px"><div class="muted" style="font-size:11px">'+x[0]+'</div><div class="cell-money" style="font-weight:700">$ '+pay3(x[1])+'</div></div>');
+  document.getElementById('provViewPeriods').innerHTML=rows.length?rows.join(''):'<span class="muted">No payout data yet \u2014 jab messages aayenge, period-wise amounts yahan dikhenge.</span>';
+  const badges=[
+    p.connections.api?`<span class="tag tag-blue">API connection \u00d7${p.connections.api}</span>`:'',
+    p.connections.smpp?`<span class="tag tag-agt">SMPP connection \u00d7${p.connections.smpp}</span>`:'',
+    (p.connections.ips&&p.connections.ips.length)?`<span class="tag tag-mgr">HTTP IP \u00d7${p.connections.ips.length}</span>`:'',
+    `<span class="tag">${(p.stats.ranges||0)} range(s)</span>`,
+    Number(p.totals.over_limit_msgs_7d||0)>0?`<span class="tag tag-amber">Over-limit msgs (7d): ${p.totals.over_limit_msgs_7d}</span>`:''
+  ].filter(Boolean).join(' ');
+  document.getElementById('provViewConns').innerHTML=badges||'<span class="muted">No connections linked by name.</span>';
+  document.getElementById('provViewHistBtn').onclick=()=>provHistory(p.id,p.name);
+  document.getElementById('provViewPayBtn').onclick=()=>provPayOpen(p.id);
+  document.getElementById('provViewModal').classList.add('show');
+}
+function provPayOpen(id){
+  const p=(provsCache||[]).find(x=>x.id===id); if(!p) return false;
+  payProv=p;
+  const unpaid=Number(p.totals.payout_unpaid||0);
+  document.getElementById('provPayTitle').textContent='Record Payment \u2014 '+p.name;
+  document.getElementById('provPayUnpaid').textContent='$ '+pay3(p.totals.payout_unpaid||0);
+  const inp=document.getElementById('payAmount');
+  inp.value=unpaid>0?String(unpaid):'';
+  document.getElementById('payPeriod').value='';
+  if('provViewModal' && document.getElementById('provViewModal').classList.contains('show')) closeModal('provViewModal');
+  document.getElementById('provPayModal').classList.add('show');
+  return false;
+}
+async function provPaySave(){
+  if(!payProv) return;
+  const amt=(document.getElementById('payAmount').value||'').trim();
+  const period=(document.getElementById('payPeriod').value||'').trim();
+  if(!amt){ alert('Payment amount required.'); return; }
+  if(!confirm('Payment $ '+amt+' record karein for "'+payProv.name+'"?')) return;
+  try{
+    const r=await API.post('/providers-info/'+payProv.id+'/payments',{amount:amt,period});
+    alert('\u2705 Payment $ '+pay3(r.amount)+' recorded.\nPrevious unpaid: $ '+pay3(r.prev_unpaid)+'\nRemaining unpaid: $ '+pay3(r.remaining));
+    closeModal('provPayModal'); loadProviders();
+  }catch(e){ alert('\u274c '+e.message); }
+}
+async function provHistory(id,name){
+  histProv=id;
+  try{
+    const rows=await API.get('/providers-info/'+id+'/payments');
+    document.getElementById('provHistTitle').textContent='Payment History \u2014 '+name;
+    document.getElementById('provHistBody').innerHTML=(rows||[]).map(r=>`<tr>
+      <td class="muted">${String(r.paid_at||'').slice(0,19)}</td>
+      <td class="cell-money">$ ${pay3(r.amount)}</td>
+      <td class="muted">$ ${pay3(r.prev_unpaid||0)}</td>
+      <td class="muted">$ ${pay3(r.remaining_unpaid||0)}</td>
+      <td>${r.period||'\u2014'}</td>
+      <td>${r.created_by||'\u2014'}</td>
+      <td class="muted">${r.notes||''}</td></tr>`).join('')||'<tr><td colspan="7" class="muted" style="text-align:center;padding:16px">No settlements yet</td></tr>';
+    if(document.getElementById('provViewModal').classList.contains('show')) closeModal('provViewModal');
+    document.getElementById('provHistModal').classList.add('show');
+  }catch(e){ alert('\u274c '+e.message); }
+}
+async function fillImportProviders(){
+  try{
+    const rows=await fillProvDatalists();
+    const opts='<option value="">\u2014 No Provider \u2014</option>'+((rows||[]).map(p=>`<option>${p.name}</option>`).join(''));
+    ['importProvider','bulkImportProvider'].forEach(id=>{ const el=document.getElementById(id); if(el&&!el.dataset.filled){ el.innerHTML=opts; el.dataset.filled='1'; } });
+  }catch(e){}
+}
+async function assignRangeProvider(rangeName,provider){
+  if(!provider||!rangeName) return;
+  try{ await API.post('/providers-info/assign-range',{range_name:rangeName,provider}); }
+  catch(e){ console.warn('provider assign failed:',e); }
 }
 async function saveCarrierSettings(){
   try{
@@ -2164,7 +2530,7 @@ async function loadBackups(){
     const bf=document.getElementById('bkFolder'); if(bf)bf.textContent=(data.backup_dir||'—').split('/').slice(-2).join('/');
     const bd=document.getElementById('bkDbFile'); if(bd)bd.textContent=(data.db_file||'—').split('/').slice(-2).join('/');
     const body=document.getElementById('backupBody'); if(!body)return;
-    body.innerHTML=backupRows.map(b=>`<tr><td class="mono">${b.file}</td><td>${(b.created_at||'').slice(0,19)}</td><td>${(b.modified_at||'').slice(0,19)}</td><td>${formatBytes(b.size)}</td><td style="white-space:nowrap"><button class="btn btn-blue btn-sm" onclick="downloadBackup('${b.file}')">Download</button> <button class="btn btn-amber btn-sm" onclick="restoreBackupFile('${b.file}')">Restore</button> <button class="btn btn-red btn-sm" onclick="deleteBackupFile('${b.file}')">Delete</button></td></tr>`).join('')||`<tr><td colspan="5" class="muted" style="text-align:center;padding:20px">No backups found</td></tr>`;
+    body.innerHTML=backupRows.map(b=>`<tr><td class="mono">${b.file}</td><td>${(b.created_at||'').slice(0,19)}</td><td>${(b.modified_at||'').slice(0,19)}</td><td>${formatBytes(b.size)}</td><td style="white-space:nowrap"><button type="button" class="gx-btn gx-blue"  onclick="downloadBackup('${b.file}')" data-tip="Download" title="Download" aria-label="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button> <button type="button" class="gx-btn gx-amber"  onclick="restoreBackupFile('${b.file}')" data-tip="Restore backup" title="Restore backup" aria-label="Restore backup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button> <button type="button" class="gx-btn danger"  onclick="deleteBackupFile('${b.file}')" data-tip="Delete" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></button></td></tr>`).join('')||`<tr><td colspan="5" class="muted" style="text-align:center;padding:20px">No backups found</td></tr>`;
     document.getElementById('backupInfo').textContent=`${backupRows.length} backup file(s)`;
   }catch(e){alert('❌ '+e.message)}
 }
@@ -2246,13 +2612,13 @@ async function pollImportJob(jobId){
     const job=await API.get('/numbers/import-jobs/'+encodeURIComponent(jobId));
     showImportJob(job);
     if(job.status==='queued'||job.status==='processing') return setTimeout(()=>pollImportJob(jobId),1500);
-    await loadRates(); await loadNumbers(); await loadImportBatches();
+    await loadRates(); if(typeof refreshNumberDependentViews==='function') await refreshNumberDependentViews(); else { await loadNumbers(); await loadImportBatches(); }
     alert(`✅ Import ${job.status}. Inserted: ${job.inserted||0}, Skipped: ${job.skipped||0}`);
   }catch(e){console.warn(e)}
 }
 async function loadImportBatches(){
   try{const rows=await API.get('/number-import-batches');const b=document.getElementById('importBatchBody');if(!b)return;
-    b.innerHTML=(rows||[]).map(r=>`<tr><td class="mono">${r.batch_id}</td><td>${r.range_name||'—'}</td><td>${r.total||0}</td><td>${r.inserted||0}</td><td>${r.skipped||0}</td><td><span class="tag tag-gray">${r.status}</span></td><td>${(r.created_at||'').slice(0,19)}</td><td>${r.status!=='deleted'?`<button class="btn btn-red btn-sm" onclick="deleteImportBatch('${r.batch_id}')">Delete Batch</button>`:'—'}</td></tr>`).join('')||`<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">No import batches found</td></tr>`;
+    b.innerHTML=(rows||[]).map(r=>`<tr><td class="mono">${r.batch_id}</td><td>${r.range_name||'—'}</td><td>${r.total||0}</td><td>${r.inserted||0}</td><td>${r.skipped||0}</td><td><span class="tag tag-gray">${r.status}</span></td><td>${(r.created_at||'').slice(0,19)}</td><td>${r.status!=='deleted'?`<button type="button" class="gx-btn danger"  onclick="deleteImportBatch('${r.batch_id}')" data-tip="Delete batch" title="Delete batch" aria-label="Delete batch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></button>`:'—'}</td></tr>`).join('')||`<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">No import batches found</td></tr>`;
   }catch(e){console.warn(e)}
 }
 async function deleteImportBatch(batchId){
@@ -2415,7 +2781,7 @@ async function loadAdminPageData(page){
     if(page==='dashboard') return loadDashboard();
     if(page==='numbers'){ await ensureAdminRates(); await ensureAdminManagers(); return loadNumbers(); }
     if(page==='allocation'){ await ensureAdminRates(); await ensureAdminManagers(); return loadNumberSummary(); }
-    if(page==='rates') return loadRates();
+        if(page==='rates') return loadRates();
     if(page==='smsReport'){ if(!document.getElementById('srBody')) buildSmsReport(); return renderSmsReport(); }
     if(page==='smsDetail'){ if(!document.getElementById('sdBody')) buildSmsDetail(); await fillSmsDetailLiteFilters(); return renderSmsDetail(); }
     if(['clientStats','agentStats','managerStats'].includes(page)){ const k=page.replace('Stats',''); if(!document.getElementById(k+'SBody')) buildEntityStats(k); return ensureAdminSms(); }
@@ -2424,10 +2790,11 @@ async function loadAdminPageData(page){
     if(page==='managers') return buildUserPage('manager');
     if(page==='agents') return buildUserPage('agent');
     if(page==='clients') return buildUserPage('client');
-    if(page==='import'){ await ensureAdminRates(); await loadImportBatches(); return refreshNumberDbTools(); }
+    if(page==='import'){ await ensureAdminRates(); await loadImportBatches(); fillImportProviders(); return refreshNumberDbTools(); }
     if(page==='cliLimit'){ await ensureAdminSms(); fillSelect('climCli',cliPool,false); await ensureAdminManagers(); fillSelect('climMgr',(usersData.manager||[]).map(m=>m.username),false); return loadCliLimits(); }
     if(page==='limitManagement'){ await ensureAdminRates(); return loadLimitManagement(); }
-    if(page==='carrierIntegration') return loadCarrierSettings();
+    if(page==='carrierIntegration'){ await loadCarrierSettings(); loadActivityIps(); return; }
+    if(page==='providers'){ loadProviders(); return; }
     if(page==='apiProviders') return loadApiProviders();
     if(page==='smppConnections') return loadSmpp();
     if(page==='systemLogs') return loadSystemLogs();
@@ -2558,11 +2925,11 @@ async function loadSmpp(){
         <td>${st.total_sent||0}${q}</td>
         <td class="muted">${st.last_activity_at?String(st.last_activity_at).slice(0,19):(st.last_connected_at?String(st.last_connected_at).slice(0,19):'Never')}</td>
         <td>
-          <button class="btn btn-blue btn-sm" onclick="openSmppModal(${c.id})">Edit</button>
+          <button type="button" class="gx-btn gx-blue"  onclick="openSmppModal(${c.id})" data-tip="Edit" title="Edit" aria-label="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
           <button class="btn ${c.active?'btn-amber':'btn-green'} btn-sm" onclick="toggleSmpp(${c.id},${c.active?0:1})">${c.active?'Stop':'Start'}</button>
           <button class="btn btn-green btn-sm" onclick="restartSmpp(${c.id})">Restart</button>
           ${canSend?`<button class="btn btn-purple btn-sm" onclick="openSmppSend(${c.id})">Send</button>`:''}
-          <button class="btn btn-red btn-sm" onclick="deleteSmpp(${c.id},'${smEsc(c.name).replace(/'/g,"\\'")}')">Delete</button>
+          <button type="button" class="gx-btn danger"  onclick="deleteSmpp(${c.id},'${smEsc(c.name).replace(/'/g,"\\'")}')" data-tip="Delete" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></button>
         </td></tr>`;
     }).join('');
     document.getElementById('smInfo').textContent=`${smppData.length} connection(s) · ${up} connected`;
@@ -2596,8 +2963,8 @@ function smModeChange(){
   document.getElementById('smClientBox').style.display=isServer?'none':'';
   document.getElementById('smServerBox').style.display=isServer?'':'none';
   document.getElementById('smModeHint').textContent=isServer
-    ? 'Power X opens a port and waits. Give the carrier this server IP, the listen port, and the System ID / Password you set below.'
-    : 'Power X connects out to the provider. Enter the host, port, System ID and Password they gave you.';
+    ? 'WHIZZ SMS opens a port and waits. Give the carrier this server IP, the listen port, and the System ID / Password you set below.'
+    : 'WHIZZ SMS connects out to the provider. Enter the host, port, System ID and Password they gave you.';
 }
 
 function openSmppModal(id){
@@ -2607,6 +2974,7 @@ function openSmppModal(id){
   const g=i=>document.getElementById(i);
   g('smModalTitle').textContent=isNew?'Add SMPP Connection':'Edit SMPP Connection';
   g('smName').value=c?c.name:'';
+  const spEl=g('smProv'); if(spEl) spEl.value=c?c.name:'';
   g('smActive').value=c?(c.active?'1':'0'):'1';
   g('smMode').value=c?c.mode:'client';
   g('smHost').value=c?(c.host||''):'';
@@ -2665,6 +3033,8 @@ async function saveSmpp(){
     if(smEditId<0) await API.post('/smpp/connections',p);
     else await API.put('/smpp/connections/'+smEditId,p);
     closeModal('smppModal');
+    const pv=(document.getElementById('smProv')?.value||'').trim();
+    if(pv){ API.post('/providers-info',{name:pv}).catch(()=>{}); }
     setTimeout(loadSmpp,600);
   }catch(e){ alert('❌ '+(e.message||e)); }
 }
@@ -2775,10 +3145,10 @@ async function loadApiProviders(){
         <td>${apStatusTag(p)}${err}</td>
         <td class="muted">${p.last_sync_at?String(p.last_sync_at).slice(0,19):'Never'}</td>
         <td>
-          <button class="btn btn-blue btn-sm" onclick="openApiProviderModal(${i})">Edit</button>
+          <button type="button" class="gx-btn gx-blue"  onclick="openApiProviderModal(${i})" data-tip="Edit" title="Edit" aria-label="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>
           <button class="btn ${p.active?'btn-amber':'btn-green'} btn-sm" onclick="toggleApiProvider(${p.id},${p.active?0:1})">${p.active?'Disable':'Enable'}</button>
           <button class="btn btn-green btn-sm" onclick="runApiProviderNow(${p.id})">Sync Now</button>
-          <button class="btn btn-red btn-sm" onclick="deleteApiProvider(${p.id},'${apEsc(p.name).replace(/'/g,"\\'")}')">Delete</button>
+          <button type="button" class="gx-btn danger"  onclick="deleteApiProvider(${p.id},'${apEsc(p.name).replace(/'/g,"\\'")}')" data-tip="Delete" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></button>
         </td></tr>`;
     }).join('')||'<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No API providers configured. Click <b>+ Add Provider</b> to add one.</td></tr>';
     document.getElementById('apInfo').textContent=`${apiProvidersData.length} provider(s) · ${active} active`;
@@ -2818,6 +3188,7 @@ function openApiProviderModal(i){
   const g=id=>document.getElementById(id);
   g('apModalTitle').textContent=isNew?'Add API Provider':'Edit API Provider';
   g('apName').value=p?p.name:'';
+  const pvEl=g('apProv'); if(pvEl) pvEl.value=p?p.name:'';
   g('apActiveSel').value=p?(p.active?'1':'0'):'1';
   g('apUrl').value=cfg.url||'';
   g('apAuth').value=cfg.auth||'query';
@@ -2880,6 +3251,8 @@ async function saveApiProvider(){
     if(apEditIndex<0){ await API.post('/sync/providers',body); }
     else { await API.put('/sync/providers/'+apiProvidersData[apEditIndex].id,body); }
     closeModal('apiProviderModal');
+    const pv=(document.getElementById('apProv')?.value||'').trim();
+    if(pv){ API.post('/providers-info',{name:pv}).catch(()=>{}); } /* name-link ensure; exists -> ignore */
     alert('✅ Provider saved. The sync service will use the new settings on its next cycle.');
     loadApiProviders();
   }catch(e){ alert('❌ '+(e.message||'Save failed')); }
@@ -2926,6 +3299,8 @@ if(typeof applyPanelSplitUi==='function') applyPanelSplitUi();
 // Default Management page is Rate Management. Heavy daily reports/dashboard are not loaded here.
 loadRates();
 setTimeout(()=>{Promise.allSettled([ensureAdminManagers(), loadImportBatches(), refreshNumberDbTools()]);},500);
+/* WHIZZ P7: khali .content div flex:1 se bara khali gap banata tha (pages section-level hain) */
+document.querySelectorAll('.content').forEach(c=>{ if(!c.querySelector('*')) c.remove(); });
 </script>
 </body>
 </html>

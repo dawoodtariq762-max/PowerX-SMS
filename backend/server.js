@@ -11,10 +11,11 @@ const crypto = require('crypto');
 const os = require('os');
 try { require('dotenv').config({ path: path.join(__dirname, '..', '.env') }); require('dotenv').config({ path: path.join(__dirname, '.env') }); } catch (_) {}
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const db = require('./db');
 const { createTables } = require('./schema');
 const { seed } = require('./seed');
-const { sign, authRequired, requireRole, descendantIds } = require('./auth');
+const { sign, signChat, authRequired, chatAuthRequired, requireRole, descendantIds, SECRET } = require('./auth');
 const backup = require('./backup');
 const providerSync = require('./providerSync');
 const smsFts = require('./fts');
@@ -126,16 +127,34 @@ async function backfillSmsStats(user) {
       const hi = Math.min(last + 100000, maxId);
       db.execNoSave('BEGIN IMMEDIATE');
       try {
+        /* P19d FIX: stat_date ab PER-ROW ukStatDate se (DST-safe — yahi function ingest
+           recordSmsStats aur delete decrementSmsDailyStats use karte hain, to teeno ka
+           keying HAMESHA match karega). Purana SQL date(received_at,'<CURRENT UK offset>')
+           SAB historical rows par AAJ ka offset lagata tha: September (BST +60) me rebuild
+           karne par January (GMT) ki 23:xx rows agle din par shift ho jaati thi — us number
+           ko delete karne par decrement sahi key par jata tha aur GALAT-key row bachi reh
+           jati thi => dashboard stale (owner ka exact symptom). Rollback: upar wala
+           INSERT..SELECT date(received_at,'${ukSqlModifier()}') GROUP BY SQL. */
+        const rows = db.all(`SELECT received_at, COALESCE(manager_id,-1) mgr, COALESCE(agent_id,-1) ag, COALESCE(client_id,-1) cl, COALESCE(cli,'') cli,
+            COALESCE(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL),0) pay
+          FROM sms_records WHERE COALESCE(is_test,0)=0 AND id > ? AND id <= ?`, [last, hi]);
+        const statAgg = new Map();
+        for (const r of rows) {
+          const sd = ukStatDate(r.received_at);
+          const k = sd + '|' + r.mgr + '|' + r.ag + '|' + r.cl + '|' + r.cli;
+          const cur = statAgg.get(k);
+          if (cur) { cur.c += 1; cur.pay += r.pay; }
+          else statAgg.set(k, { sd, mgr: r.mgr, ag: r.ag, cl: r.cl, cli: r.cli, c: 1, pay: r.pay });
+        }
         // date-owner-cli keys SPAN chunks -> must UPSERT (add), not plain INSERT
-        db.runNoSave(`INSERT INTO sms_daily_stats (stat_date,manager_id,agent_id,client_id,cli,sms_count,payout_sum)
-          SELECT date(received_at, '${ukSqlModifier()}') AS sd, COALESCE(manager_id,-1), COALESCE(agent_id,-1), COALESCE(client_id,-1), COALESCE(cli,''),
-                 COUNT(*), COALESCE(SUM(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL)),0)
-          FROM sms_records
-          WHERE COALESCE(is_test,0)=0 AND id > ? AND id <= ?
-          GROUP BY sd, manager_id, agent_id, client_id, cli
-          ON CONFLICT(stat_date,manager_id,agent_id,client_id,cli)
-          DO UPDATE SET sms_count = sms_count + excluded.sms_count,
-                        payout_sum = payout_sum + excluded.payout_sum`, [last, hi]);
+        statAgg.forEach(m => {
+          db.runNoSave(`INSERT INTO sms_daily_stats (stat_date,manager_id,agent_id,client_id,cli,sms_count,payout_sum)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(stat_date,manager_id,agent_id,client_id,cli)
+            DO UPDATE SET sms_count = sms_count + excluded.sms_count,
+                          payout_sum = payout_sum + excluded.payout_sum`,
+            [m.sd, m.mgr, m.ag, m.cl, m.cli, m.c, m.pay]);
+        });
         db.execNoSave('COMMIT');
       } catch (e) { try { db.execNoSave('ROLLBACK'); } catch (_) {} throw e; }
       last = hi;
@@ -198,13 +217,16 @@ function rateLimit({ windowMs = 60000, max = 300, keyFn }) {
 const loginRateLimit = rateLimit({ windowMs: 5 * 60000, max: 10, keyFn: req => `login:${req.ip || 'unknown'}` });
 // General API guard (per IP until auth attaches user; authRequired re-checks per user in auth.js).
 const apiRateLimit = rateLimit({ windowMs: 60000, max: parseInt(process.env.API_RATE_PER_MIN || '1200', 10) || 1200, keyFn: req => `api:${req.ip || 'unknown'}` });
-// Carrier ingest guard — generous by design (50–70 SMS/s sustained = 4200/min); 429 tells the carrier to retry.
+// Carrier ingest guard — sized for the sustained-35-SMS/s requirement:
+//   35/s = 2,100/min = 126,000/h. Default 12,000/min per source IP = 200/s sustained
+//   (~5.7x margin), so every 1-second interval accepts 35+ even at fixed-window edges.
+//   Still capped — runaway/abuse traffic gets 429 (tells the carrier to retry).
 const smsIngestLimit = rateLimit({ windowMs: 60000, max: parseInt(process.env.INCOMING_SMS_RATE_PER_MIN || '12000', 10) || 12000, keyFn: req => `sms:${req.ip || 'unknown'}` });
 // Heavy number writes (allocate/unallocate/delete/import/divide) — 120/min per IP is far above any UI usage.
 const heavyWriteLimit = rateLimit({ windowMs: 60000, max: parseInt(process.env.HEAVY_WRITE_RATE_PER_MIN || '120', 10) || 120, keyFn: req => `heavy:${req.ip || 'unknown'}` });
 app.use('/api', (req, res, next) => {
   const p = req.path;
-  if (p === '/health' || p === '/login' || p.startsWith('/incoming-sms')) return next();
+  if (p === '/health' || p === '/login' || p.startsWith('/incoming-sms') || p === '/webhook/sms') return next();
   return apiRateLimit(req, res, next);
 });
 app.use('/api/numbers', (req, res, next) => {
@@ -308,7 +330,7 @@ app.get('/api/exports/:id/download', (req, res) => {
   const file = parseJsonSafe(job.result_json)?.file;
   if (!file || !fs.existsSync(file)) return res.status(410).json({ error: 'Export file expired' });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="powerx-${job.payload_json.includes('sms') ? 'sms' : 'numbers'}-${job.id}.csv"`);
+  res.setHeader('Content-Disposition', `attachment; filename="whizz-${job.payload_json.includes('sms') ? 'sms' : 'numbers'}-${job.id}.csv"`);
   fs.createReadStream(file).pipe(res);
 });
 
@@ -340,6 +362,19 @@ function cachedJson(req, res, ttlMs, producer, verKey) {
 }
 function pad2(n){ return String(n).padStart(2,'0'); }
 function fmtUtcSql(ms){ const d=new Date(ms); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth()+1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`; }
+/* P14: UK wall-clock date+time -> UTC sql timestamp (DST-safe via ukOffsetMinutes) */
+function ukLocalDateTimeToUtcSql(dateStr, hm){
+  const m=String(dateStr||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const t=String(hm||'').match(/^(\d{1,2}):(\d{2})$/);
+  if(!m||!t) return '';
+  const hh=Math.min(23,parseInt(t[1],10)), mm=Math.min(59,parseInt(t[2],10));
+  const base=Date.UTC(+m[1], +m[2]-1, +m[3], hh, mm, 0);
+  let off=ukOffsetMinutes(new Date(base));
+  let utc=base - off*60000;
+  const off2=ukOffsetMinutes(new Date(utc));
+  if(off2!==off) utc=base - off2*60000;
+  return fmtUtcSql(utc);
+}
 function ukLocalDateToUtcSql(dateStr, plusDays=0){
   const m=String(dateStr||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if(!m) return '';
@@ -354,13 +389,14 @@ function ukLocalDateToUtcSql(dateStr, plusDays=0){
 // Clean URL routes (must be before static so /admin.html can redirect to /admin)
 const FRONTEND_ROOT = path.join(__dirname, '..');
 function sendFrontendPage(res, file) { res.sendFile(path.join(FRONTEND_ROOT, file)); }
-// Main panel login (Admin / Manager / Agent / Client) is served at /panel-login.
-// Legacy /login and /login.html are permanently redirected so old bookmarks keep working.
-app.get('/', (req, res) => res.redirect(302, '/panel-login'));
-app.get('/panel-login', (req, res) => sendFrontendPage(res, 'login.html'));
-app.get('/panel-login.html', (req, res) => res.redirect(301, '/panel-login'));
-app.get('/login', (req, res) => res.redirect(301, '/panel-login'));
-app.get('/login.html', (req, res) => res.redirect(301, '/panel-login'));
+// Main panel login (Admin / Manager / Agent / Client) is served at /login.
+// Legacy /panel-login* paths are permanently redirected so old bookmarks keep working
+// and there is exactly ONE URL serving the login page (no duplicate access).
+app.get('/', (req, res) => res.redirect(302, '/login'));
+app.get('/login', (req, res) => sendFrontendPage(res, 'login.html'));
+app.get('/login.html', (req, res) => res.redirect(301, '/login'));
+app.get('/panel-login', (req, res) => res.redirect(301, '/login'));
+app.get('/panel-login.html', (req, res) => res.redirect(301, '/login'));
 app.get('/admin', (req, res) => sendFrontendPage(res, 'admin.html'));
 app.get('/admin.html', (req, res) => res.redirect(301, '/admin'));
 app.get('/admin/:page', (req, res) => sendFrontendPage(res, 'admin.html'));
@@ -394,8 +430,18 @@ app.get('/test', (req, res) => sendFrontendPage(res, 'test.html'));
 app.get('/test.html', (req, res) => res.redirect(301, '/test'));
 app.get('/test/:page', (req, res) => sendFrontendPage(res, 'test.html'));
 
+// Legacy nested "Galaxy-Sms" folder (old project copy kept in the repo for
+// reference) must NOT be reachable as user-facing Galaxy-branded pages.
+app.use('/Galaxy-Sms', (req, res) => res.status(404).send('Not found'));
+
 // serve frontend assets and static files from project root
 app.use(express.static(FRONTEND_ROOT));
+
+/* ===== P19e + P21: INTERNAL CHAT + SEPARATE CHAT AUTH (isolated module — is line ko hata kar feature
+   poora disable/revert ho jata hai; kisi existing route/behaviour ko touch nahi karta) ===== */
+require('./chat')(app, { authRequired, chatAuthRequired, requireRole, logAction, signChat, SECRET });
+
+
 
 
 /* ============ PROVIDER SYNC ADMIN API ============
@@ -741,7 +787,7 @@ app.get('/api/smpp/outbox', authRequired, requireRole('admin'), (req, res) => {
   res.json(rows);
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, service: 'Power X SMS', time: new Date().toISOString() }));
+app.get('/health', (req, res) => res.json({ ok: true, service: 'WHIZZ SMS', time: new Date().toISOString() }));
 app.get('/api/health', (req, res) => {
   let dbSize = 0, walSize = 0;
   try {
@@ -750,7 +796,7 @@ app.get('/api/health', (req, res) => {
   } catch (_) {}
   const mem = process.memoryUsage();
   res.json({
-    ok: true, service: 'Power X SMS', time: new Date().toISOString(),
+    ok: true, service: 'WHIZZ SMS', time: new Date().toISOString(),
     uptime_s: Math.round(process.uptime()),
     rss_mb: +(mem.rss / 1048576).toFixed(1),
     heap_mb: +(mem.heapUsed / 1048576).toFixed(1),
@@ -1034,9 +1080,9 @@ function logWebhook(status, payload, number='', matched='', cli='', message='', 
     [status, String(number||''), String(matched||''), String(cli||''), String(message||''), safeJson(payload), String(error||''), String(sourceIp||'')]); }
   catch(e){ console.warn('webhook log failed', e.message); }
 }
-function addFailedSms(payload, number='', cli='', message='', error=''){
-  try{ db.run('INSERT INTO failed_sms_queue (number,cli,message,raw_payload,error) VALUES (?,?,?,?,?)',
-    [String(number||''),String(cli||''),String(message||''),safeJson(payload),String(error||'')]); }
+function addFailedSms(payload, number='', cli='', message='', error='', sourceIp=''){
+  try{ db.run('INSERT INTO failed_sms_queue (number,cli,message,raw_payload,error,source_ip) VALUES (?,?,?,?,?,?)',
+    [String(number||''),String(cli||''),String(message||''),safeJson(payload),String(error||''),String(sourceIp||'')]); }
   catch(e){ console.warn('failed sms queue failed', e.message); }
 }
 
@@ -1058,6 +1104,21 @@ app.get('/api/me', authRequired, (req, res) => {
   res.json(u);
 });
 
+/* ============ P18: LEGAL / ACCEPTABLE-USE GATE ============ */
+const LEGAL_POLICY_VERSION = '2026-09-13-v1';
+app.get('/api/legal/status', authRequired, (req, res) => {
+  const u = db.get('SELECT legal_version, legal_accepted_at FROM users WHERE id=?', [req.user.id]) || {};
+  const accepted = u.legal_version === LEGAL_POLICY_VERSION;
+  res.json({ required: !accepted, accepted, version: LEGAL_POLICY_VERSION, accepted_at: u.legal_accepted_at || '' });
+});
+app.post('/api/legal/accept', authRequired, (req, res) => {
+  const v = String((req.body || {}).version || '');
+  if (v !== LEGAL_POLICY_VERSION) return res.status(400).json({ error: 'Policy version mismatch' });
+  db.run('UPDATE users SET legal_version=?, legal_accepted_at=datetime(\'now\') WHERE id=?', [v, req.user.id]);
+  logAction(req, 'legal_use_accept', 'legal', { version: v });
+  res.json({ ok: true, version: v });
+});
+
 /* ============ USERS (managers/agents/clients) ============ */
 // list users of a role within caller's scope
 app.get('/api/users/:role', authRequired, (req, res) => {
@@ -1067,7 +1128,7 @@ app.get('/api/users/:role', authRequired, (req, res) => {
   const ph = ids.map(() => '?').join(',');
   // for role list we want users of that role whose id is in scope (excluding self)
   const rows = db.all(
-    `SELECT id,username,name,email,whatsapp,contact,skype,active,parent_id,payment_type
+    `SELECT id,username,name,email,whatsapp,contact,skype,active,parent_id,payment_type,is_super_manager,chat_display_name
      FROM users WHERE role=? AND id IN (${ph}) AND id<>? ORDER BY id DESC`,
     [role, ...ids, req.user.id]
   );
@@ -1075,6 +1136,21 @@ app.get('/api/users/:role', authRequired, (req, res) => {
 });
 
 // create user (admin->manager, manager->agent, agent->client)
+/* Shared user-insert helper — used by POST /api/users */
+function insertUserAccount({ username, password, role, name, email, whatsapp, contact, skype, active, payment_type, parentId }) {
+  const cleanUsername = String(username || '').trim();
+  if (!cleanUsername) return { error: 'username required', status: 400 };
+  const exists = db.get('SELECT id FROM users WHERE username=? COLLATE NOCASE', [cleanUsername]);
+  if (exists) return { error: 'Username already taken', status: 409 };
+  const info = db.run(
+    `INSERT INTO users (username,password,role,name,email,whatsapp,contact,skype,parent_id,active,payment_type)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    [cleanUsername, bcrypt.hashSync(String(password), 10), role, name || '', email || '',
+     whatsapp || '', contact || '', skype || '', parentId, active === false ? 0 : 1, role==='agent'?normalizePaymentCycle(payment_type||'weekly_7_1'):'weekly_7_1']
+  );
+  return { ok: true, id: info.lastInsertRowid };
+}
+
 app.post('/api/users', authRequired, (req, res) => {
   const { username, password, role, name, email, whatsapp, contact, skype, active, payment_type } = req.body || {};
   if (!username || !password || !role) return res.status(400).json({ error: 'username, password, role required' });
@@ -1101,15 +1177,23 @@ app.post('/api/users', authRequired, (req, res) => {
     if (!ids.includes(parentId)) return res.status(403).json({ error: 'Invalid parent user' });
   }
 
-  db.run(
-    `INSERT INTO users (username,password,role,name,email,whatsapp,contact,skype,parent_id,active,payment_type)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-    [cleanUsername, bcrypt.hashSync(String(password), 10), role, name || '', email || '',
-     whatsapp || '', contact || '', skype || '', parentId, active === false ? 0 : 1, role==='agent'?normalizePaymentCycle(payment_type||'weekly_7_1'):'weekly_7_1']
-  );
+  const created = insertUserAccount({ username, password, role, name, email, whatsapp, contact, skype, active, payment_type, parentId });
+  if (!created.ok) return res.status(created.status || 400).json({ error: created.error });
+
+  let assignedChatPw = null;
+  // P21: Initialize separate chat credential for non-admin accounts (unique 6-digit numeric password)
+  if (role !== 'admin') {
+    assignedChatPw = (req.body && req.body.chat_password)
+      ? String(req.body.chat_password)
+      : String(crypto.randomInt(100000, 999999));
+    db.run(`INSERT INTO chat_credentials (user_id, chat_password_hash, chat_enabled, password_set_at) VALUES (?,?,1,datetime('now'))`,
+      [created.id, bcrypt.hashSync(assignedChatPw, 10)]);
+  }
+
   logAction(req,'create_user','users',{username,role});
-  res.json({ ok: true });
+  res.json({ ok: true, id: created.id, chat_password: assignedChatPw });
 });
+
 
 // update user
 app.put('/api/users/:id', authRequired, (req, res) => {
@@ -1131,9 +1215,59 @@ app.delete('/api/users/:id', authRequired, (req, res) => {
   const id = +req.params.id;
   const ids = scopeIds(req.user);
   if (!ids.includes(id) || id === req.user.id) return res.status(403).json({ error: 'Not allowed' });
-  db.run('DELETE FROM users WHERE id=?', [id]);
-  logAction(req,'delete_user','users',{id});
-  res.json({ ok: true });
+
+  const target = db.get('SELECT * FROM users WHERE id=?', [id]);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.role === 'admin') return res.status(403).json({ error: 'Cannot delete admin' });
+
+  try {
+    db.execNoSave('BEGIN');
+
+    // 1. Re-parent / detach child users to prevent FK constraint failure
+    db.runNoSave('UPDATE users SET parent_id = ? WHERE parent_id = ?', [target.parent_id || null, id]);
+    if (target.role === 'manager') {
+      db.runNoSave('UPDATE numbers SET manager_id = NULL WHERE manager_id = ?', [id]);
+      db.runNoSave('DELETE FROM cli_limits WHERE manager_id = ?', [id]);
+    } else if (target.role === 'agent') {
+      db.runNoSave("UPDATE numbers SET agent_id = NULL, client_id = NULL, payout = '0' WHERE agent_id = ?", [id]);
+      db.runNoSave('DELETE FROM agent_wallets WHERE agent_id = ?', [id]);
+      db.runNoSave('DELETE FROM sharing_users WHERE agent_user_id = ?', [id]);
+      db.runNoSave('DELETE FROM payment_notifications_v2 WHERE agent_id = ?', [id]);
+    } else if (target.role === 'client') {
+      db.runNoSave("UPDATE numbers SET client_id = NULL, payout = '0' WHERE client_id = ?", [id]);
+    }
+
+    // 2. Clean up user security PIN credentials
+    db.runNoSave('DELETE FROM chat_credentials WHERE user_id = ?', [id]);
+
+    // 3. Clean up complaints & replies
+    const cmps = db.all('SELECT id FROM complaints WHERE sender_id = ?', [id]);
+    if (cmps.length) {
+      const cmpIds = cmps.map(c => c.id);
+      const ph = cmpIds.map(() => '?').join(',');
+      db.runNoSave('DELETE FROM complaint_replies WHERE complaint_id IN (' + ph + ')', cmpIds);
+      db.runNoSave('DELETE FROM complaints WHERE id IN (' + ph + ')', cmpIds);
+    }
+    db.runNoSave('DELETE FROM complaint_replies WHERE sender_id = ?', [id]);
+
+    // 4. Detach jobs & tokens
+    db.runNoSave('UPDATE jobs SET created_by = NULL WHERE created_by = ?', [id]);
+
+    db.runNoSave('DELETE FROM idempotency_keys WHERE user_id = ?', [id]);
+
+    // 5. Delete the user
+    db.runNoSave('DELETE FROM users WHERE id = ?', [id]);
+
+    db.execNoSave('COMMIT');
+    db.save();
+
+    logAction(req, 'delete_user', 'users', { id, username: target.username, role: target.role });
+    res.json({ ok: true });
+  } catch (err) {
+    try { db.execNoSave('ROLLBACK'); } catch (_) {}
+    console.error('Delete user error:', err);
+    res.status(500).json({ error: 'Failed to delete user: ' + err.message });
+  }
 });
 
 
@@ -1154,15 +1288,43 @@ function normalizePaymentCycle(v){
   return 'weekly_7_1';
 }
 function paymentTypeLabel(t){ return ({daily:'Daily',weekly:'Weekly',weekly_7_1:'Weekly (7/1)',weekly_7_7:'Weekly (7/7)',monthly_30x45:'Monthly (30x45)'})[t] || ({daily:'Daily',weekly:'Weekly',monthly_30x45:'Monthly (30x45)'})[normalizePaymentType(t)] || 'Weekly'; }
-function assignedPaymentCycleForNumber(n, rangeRow={}){ const u=n?.agent_id?db.get('SELECT payment_type FROM users WHERE id=?',[n.agent_id]):null; return normalizePaymentCycle(u?.payment_type || n?.payterm || rangeRow?.payment_type || 'weekly_7_1'); }
+/* P12 PAYMENT FIX: per-allocation cycle is the law.
+   Priority: 1) numbers.payterm (set on THIS allocation) 2) users.payment_type (agent DEFAULT only)
+   3) ranges.payment_type (rate-card fallback) 4) weekly_7_1.
+   Previous order (recorded for rollback): users.payment_type || n.payterm || range.payment_type || weekly_7_1 —
+   agent-level default used to override the allocation and every allocation overwrote the agent default. */
+function assignedPaymentCycleForNumber(n, rangeRow={}){ const u=n?.agent_id?db.get('SELECT payment_type FROM users WHERE id=?',[n.agent_id]):null; return normalizePaymentCycle(n?.payterm || u?.payment_type || rangeRow?.payment_type || 'weekly_7_1'); }
 function assignedPaymentTypeForNumber(n, rangeRow={}){ return normalizePaymentType(assignedPaymentCycleForNumber(n, rangeRow)); }
 function payoutRateForPaymentCycle(row, cycle){
+  if (!row) return '0';
   cycle=normalizePaymentCycle(cycle);
-  const candidates = cycle==='daily' ? [row.rate_1_1,row.number_rate,row.rate_7_1,row.rate_30_45] : (cycle==='weekly_7_7' ? [row.rate_7_7,row.rate_7_1,row.number_rate,row.rate_30_45,row.rate_1_1] : (cycle==='monthly_30x45' ? [row.rate_30_45,row.number_rate,row.rate_7_1,row.rate_1_1] : [row.rate_7_1,row.rate_7_7,row.number_rate,row.rate_30_45,row.rate_1_1]));
+  /* P19: number_rate (numbers.rate = admin allocation override) ab SAB se pehle check hota hai —
+     TRUE override semantics, bilkul numbers-list effective_rate display jaisi (wahan bhi n.rate
+     pehle aata hai). Pehle number_rate fallback position par tha (range rate ke baad) — admin
+     override tabhi lagta jab range ki cycle rate NA hoti. Existing production data me numbers.rate
+     sirf '' hota hai (koi code path use set nahi karta tha), is liye reordering purane rows ke
+     liye behaviour change NAHI hai. Rollback: candidates me row.number_rate ko cycle-rate ke baad
+     wapas rakh dein. */
+  const ov=row.number_rate;
+  const candidates = cycle==='daily' ? [ov,row.rate_1_1,row.rate_7_1,row.rate_30_45] : (cycle==='weekly_7_7' ? [ov,row.rate_7_7,row.rate_7_1,row.rate_30_45,row.rate_1_1] : (cycle==='monthly_30x45' ? [ov,row.rate_30_45,row.rate_7_1,row.rate_1_1] : [ov,row.rate_7_1,row.rate_7_7,row.rate_30_45,row.rate_1_1]));
   for(const c of candidates){ const v=normalizeDecimalString(c); if(isPositiveDecimal(v)) return v; }
   return '0';
 }
 function payoutRateForPaymentType(row, type){ return payoutRateForPaymentCycle(row, type); }
+/* P19k #4: Provider Rate for a payment cycle — payoutRateForPaymentCycle ke EXACT candidate
+   order wala mirror (daily: 1/1 -> 7/1 -> 30/45; weekly_7_7: 7/7 -> 7/1 -> ...; waghera),
+   lekin sirf provider_rate_* columns se (number-level override provider rate pe lagu
+   NAHI hota — provider rate range-level internal cost hai). NA/0 => '0' => cost me hissa
+   nahi. Admin-internal: sirf Real Provider Cost calculation use karta hai. */
+function providerRateForPaymentCycle(row, cycle){
+  cycle = normalizePaymentCycle(cycle);
+  const candidates = cycle==='daily' ? [row.provider_rate_1_1,row.provider_rate_7_1,row.provider_rate_30_45]
+    : (cycle==='weekly_7_7' ? [row.provider_rate_7_7,row.provider_rate_7_1,row.provider_rate_30_45,row.provider_rate_1_1]
+    : (cycle==='monthly_30x45' ? [row.provider_rate_30_45,row.provider_rate_7_1,row.provider_rate_1_1]
+    : [row.provider_rate_7_1,row.provider_rate_7_7,row.provider_rate_30_45,row.provider_rate_1_1]));
+  for (const c of candidates) { const v = normalizeDecimalString(c); if (isPositiveDecimal(v)) return v; }
+  return '0';
+}
 function cents(v){ return Math.round((parseFloat(normalizeDecimalString(v)||'0')||0)*100); }
 function moneyFromCents(c){ return (Math.max(0, Math.round(c||0))/100).toFixed(2).replace(/\.00$/,'').replace(/(\.\d)0$/,'$1'); }
 function ukParts(date=new Date()){
@@ -1183,20 +1345,69 @@ function dbDateToDate(ts){
   const m=String(ts||'').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
   if(!m)return null; return new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0)));
 }
+/* P18: payment schedule config (per type) — sirf FUTURE ledger rows par asar (eligible_at ingest-time).
+   Historical payment_ledger kabhi rewrite nahi hota. Daily behaviour unchanged. */
+const PAY_SCHEDULE_DEFAULTS = { weekly_start_dow: 1, weekly_pay_dow: 3, monthly_start_day: 1, monthly_delay_days: 45 };
+function paymentScheduleRow(type){
+  type=normalizePaymentType(type);
+  const row=db.get('SELECT * FROM payment_schedule WHERE payment_type=?',[type]);
+  if(!row) return { payment_type:type, ...PAY_SCHEDULE_DEFAULTS };
+  return { ...PAY_SCHEDULE_DEFAULTS, ...row };
+}
+/* UK-date ms helpers for period math (UK midnight anchoring, DST-safe via utcMsFromUkDate). */
+function ukDateStrOfMs(ms){ const p=ukParts(new Date(ms)); return `${p.year}-${p.month}-${p.day}`; }
+function civilAdd(dateStr,n){ const y=+dateStr.slice(0,4), m=+dateStr.slice(5,7), d=+dateStr.slice(8,10); const dt=new Date(Date.UTC(y,m-1,d+n)); return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,'0')}-${String(dt.getUTCDate()).padStart(2,'0')}`; }
+function addUkDays(dateStr,n){ return civilAdd(dateStr,n); }
+function ukDow(dateStr){ return ({Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6})[ukParts(new Date(utcMsFromUkDate(dateStr,0))).weekday] ?? 0; }
+function schedulePeriodFor(type, ukDateStr){
+  const sch=paymentScheduleRow(type);
+  if(type==='daily') return { start:ukDateStr, end:ukDateStr, payMs:utcMsFromUkDate(ukDateStr,1) };
+  const nz=(v,d)=>(v===''||v==null)?d:+v;
+  if(type==='weekly'){
+    const startDow=Math.min(6,Math.max(0,nz(sch.weekly_start_dow,1))); const payDow=Math.min(6,Math.max(0,nz(sch.weekly_pay_dow,3)));
+    const dow=ukDow(ukDateStr);
+    const startMs=utcMsFromUkDate(ukDateStr,0)-((dow-startDow+7)%7)*86400000;
+    const endMs=startMs+6*86400000;
+    const endDow=(startDow+6)%7;
+    const delay=((payDow-endDow+6)%7)+1; /* 1..7 din, payment-day par */
+    const endStr=ukDateStrOfMs(endMs);
+    return { start:ukDateStrOfMs(startMs), end:endStr, payMs:utcMsFromUkDate(civilAdd(endStr,delay),0) };
+  }
+  const S=Math.min(28,Math.max(1,nz(sch.monthly_start_day,1))); const delay=Math.min(180,Math.max(0,nz(sch.monthly_delay_days,45)));
+  const Y=+ukDateStr.slice(0,4), M=+ukDateStr.slice(5,7);
+  const mk=(y,m)=>`${y}-${String(m).padStart(2,'0')}-${String(S).padStart(2,'0')}`;
+  let sy=Y, sm=M;
+  if(mk(sy,sm)>ukDateStr){ sm--; if(sm<1){ sm=12; sy--; } }
+  const nextMk=(sm===12)?mk(sy+1,1):mk(sy,sm+1);
+  const endStr=addUkDays(nextMk,-1);
+  const payMs=utcMsFromUkDate(civilAdd(endStr,delay),0);
+  return { start:mk(sy,sm), end:endStr, payMs };
+}
 function paymentCycleInfo(type, earnedAt){
   type=normalizePaymentType(type); const d=dbDateToDate(earnedAt)||new Date(); const uk=ukParts(d); const date=`${uk.year}-${uk.month}-${uk.day}`;
   if(type==='daily') return {cycle_key:date, eligible_at:utcSqlFromMs(utcMsFromUkDate(date,1))};
-  const startMs=utcMsFromUkDate(date,0); const weekdayMap={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6}; const dow=weekdayMap[uk.weekday] ?? 0; const daysSinceTue=(dow-2+7)%7;
-  if(type==='weekly'){
-    const start=new Date(startMs-daysSinceTue*86400000); const key=utcSqlFromMs(start.getTime()).slice(0,10); return {cycle_key:key, eligible_at:utcSqlFromMs(start.getTime()+7*86400000)};
-  }
-  // 30-day work cycle anchored at Unix epoch in UK-date days; eligible after 30+45 days.
-  const dayNo=Math.floor(utcMsFromUkDate(date,0)/86400000); const cycleStartDay=dayNo-(dayNo%30); const startDate=utcSqlFromMs(cycleStartDay*86400000).slice(0,10); return {cycle_key:startDate, eligible_at:utcSqlFromMs((cycleStartDay+75)*86400000)};
+  const per=schedulePeriodFor(type, date);
+  return {cycle_key:per.start, eligible_at:utcSqlFromMs(per.payMs)};
 }
-function walletValid(v){ return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(String(v||'').trim()); }
-function agentManagerId(agentId){ return db.get("SELECT parent_id FROM users WHERE id=? AND role='agent'",[agentId])?.parent_id || null; }
+function walletValid(v){ return /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(String(v||'').trim()); } /* legacy TRC20 check — pre-P19j records only */
+/* P19j: Binance UID = 8-12 digit numeric ID (Binance Pay profile). Deliberately not overly restrictive. */
+function binanceUidValid(v){ return /^\d{8,12}$/.test(String(v||'').trim()); }
+function getAgentManager(agentId) {
+  if (!agentId) return null;
+  const agent = db.get("SELECT id, username, parent_id FROM users WHERE id=? AND role='agent'", [agentId]);
+  if (!agent || !agent.parent_id) return null;
+  const parent = db.get("SELECT id, username, role FROM users WHERE id=?", [agent.parent_id]);
+  if (parent && parent.role === 'manager') return parent;
+  return null;
+}
+function agentManagerId(agentId) {
+  const m = getAgentManager(agentId);
+  return m ? m.id : null;
+}
 function recordPaymentLedgerForSms(smsId, persist=true){
-  const srow=db.get(`SELECT s.id,s.agent_id,s.manager_id,s.range_id,s.payout_amount,s.received_at,COALESCE(NULLIF(s.payment_type,''), r.payment_type) AS payment_type FROM sms_records s LEFT JOIN ranges r ON r.id=s.range_id WHERE s.id=?`,[smsId]);
+  /* P16: priority 1) sms.payment_type (ingestion snapshot) 2) numbers.payterm (allocation)
+     3) users.payment_type (agent default) 4) ranges.payment_type 5) weekly — backfill rows ke liye bhi sahi cycle */
+  const srow=db.get(`SELECT s.id,s.agent_id,s.manager_id,s.range_id,s.payout_amount,s.received_at,COALESCE(NULLIF(s.payment_type,''), NULLIF(n.payterm,''), u.payment_type, r.payment_type, 'weekly') AS payment_type FROM sms_records s LEFT JOIN numbers n ON n.id=s.number_id LEFT JOIN users u ON u.id=s.agent_id LEFT JOIN ranges r ON r.id=s.range_id WHERE s.id=?`,[smsId]);
   if(!srow || !srow.agent_id || cents(srow.payout_amount)<=0) return;
   if(db.get('SELECT id FROM payment_ledger WHERE sms_record_id=?',[smsId])) return;
   const type=normalizePaymentType(srow.payment_type||'weekly'); const cyc=paymentCycleInfo(type,srow.received_at);
@@ -1238,28 +1449,76 @@ app.get('/api/ranges', authRequired, (req, res) => cachedJson(req, res, 5000, ()
   const includeDeleted = String(req.query.include_deleted || '').toLowerCase() === '1' || String(req.query.include_deleted || '').toLowerCase() === 'true';
   const includeTests = String(req.query.include_tests || '').toLowerCase() === '1' || String(req.query.include_tests || '').toLowerCase() === 'true';
   const where = includeDeleted ? '1=1' : "COALESCE(r.deleted_at,'')=''";
-  if (!includeTests) {
-    return db.all(`SELECT r.id,r.name,r.prefix,r.currency,r.rate_1_1,r.rate_7_1,r.rate_7_7,r.rate_30_45,r.memo,r.payment_type,r.created_at,r.deleted_at,'' AS test_number,'' AS test_numbers
-      FROM ranges r WHERE ${where} ORDER BY r.name COLLATE NOCASE ASC, r.id ASC`);
+  /* P19f FIX (owner: Range selectors role-scoped): non-admin ko sirf WOHI ranges milte hain
+     jinme uske accessible numbers hain — EXISTING ownership model se (numbers.manager_id /
+     agent_id / client_id — wahi numberScope jo /api/numbers use karta hai). Zero accessible
+     numbers => range hidden. Admin ko sab ranges (Rate Management unchanged).
+     NOTE: sirf list scope nahi hai security — /api/numbers (buildNumberQuery owner-scope),
+     /api/numbers/allocate (numberScope guard) aur smart-divide (ownerCond) pehle se hi
+     scope-enforced hain, is liye manual API call se unauthorized range ka data ya allocation
+     possible nahi (p19f-verify.js me tested). Rollback: yeh scope block delete kar do. */
+  let scopeIds = null;
+  if (req.user && req.user.role !== 'admin') {
+    const sc = numberScope(req.user, 'n');
+    scopeIds = new Set(db.all(`SELECT DISTINCT n.range_id FROM numbers n WHERE n.range_id IS NOT NULL AND ${sc.where}`, sc.params).map(r => r.range_id));
+    if (!scopeIds.size) return [];
   }
-  const rows = db.all(`SELECT r.*,
+  /* P19k #4: provider_rate_* columns ab SELECT me hain, lekin response jaane se pehle
+     NON-ADMIN ke liye strip ho jati hain (admin-internal field — Rate Management only). */
+  const stripProviderRates = (rows) => {
+    if (!req.user || req.user.role === 'admin') return rows;
+    return (rows || []).map(r => {
+      const c = { ...r };
+      delete c.provider_rate_1_1; delete c.provider_rate_7_1; delete c.provider_rate_7_7; delete c.provider_rate_30_45;
+      return c;
+    });
+  };
+  if (!includeTests) {
+    return stripProviderRates(db.all(`SELECT r.id,r.name,r.prefix,COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern,r.currency,r.rate_1_1,r.rate_7_1,r.rate_7_7,r.rate_30_45,r.memo,r.payment_type,r.created_at,r.deleted_at,r.country,r.provider,r.currency_rate,r.cli_limit,r.range_start,r.range_end,r.status,r.provider_rate_1_1,r.provider_rate_7_1,r.provider_rate_7_7,r.provider_rate_30_45,r.self_alloc_enabled,r.self_alloc_max,r.self_alloc_periods,'' AS test_number,'' AS test_numbers
+      FROM ranges r WHERE ${where} ORDER BY r.name COLLATE NOCASE ASC, r.id ASC`)
+      .filter(r => !scopeIds || scopeIds.has(r.id)));
+  }
+  const rows = stripProviderRates(db.all(`SELECT r.*,
+    COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern,
     COALESCE((SELECT GROUP_CONCAT(test_number, ', ') FROM range_test_numbers t WHERE t.range_id=r.id AND t.active=1), r.test_number, '') AS test_numbers
-    FROM ranges r WHERE ${where} ORDER BY r.name COLLATE NOCASE ASC, r.id ASC`);
+    FROM ranges r WHERE ${where} ORDER BY r.name COLLATE NOCASE ASC, r.id ASC`)
+    .filter(r => !scopeIds || scopeIds.has(r.id)));
   rows.forEach(r => { if (r.test_numbers) r.test_number = r.test_numbers; });
   return rows;
 }));
+
+/* P19k #8: SMS Rate Card data — SAB configured (non-deleted) ranges, chahe unme inventory
+   ho ya na ho. Owner rule: Rate Card me inventory-restricted visibility NAHI lagti (wo
+   sirf baaki selectors me hai — /api/ranges role-scope P19f jaisa hi hai, untouched).
+   Sirf wahi roles jinke panels me Rate Card page hai (admin/manager/agent). Client nahi.
+   Response PUBLIC fields only: provider rates / memo / internal flags yahan kabhi nahi. */
+app.get('/api/rate-card', authRequired, (req, res) => {
+  if (!['admin', 'manager', 'agent'].includes(req.user.role)) return res.status(403).json({ error: 'Not allowed' });
+  return cachedJson(req, res, 5000, () => {
+    return db.all(`SELECT r.id, r.name, r.prefix, COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern, r.currency, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45, r.payment_type
+      FROM ranges r WHERE COALESCE(r.deleted_at,'')='' ORDER BY r.name COLLATE NOCASE ASC, r.id ASC`);
+  }, 'numbers_ver');
+});
+
 // only admin can set rates / create ranges
 app.post('/api/ranges', authRequired, requireRole('admin'), (req, res) => {
   const b = req.body || {};
   if (!b.name) return res.status(400).json({ error: 'Range name required' });
-  const ins = db.run(`INSERT INTO ranges (name,prefix,test_number,currency,rate_1_1,rate_7_1,rate_7_7,rate_30_45,memo,payment_type)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  /* P19k #4: provider_rate_* (admin-internal, 'NA' default — ranges.rate_* convention) */
+  const saEnabled = b.self_alloc_enabled !== undefined ? (b.self_alloc_enabled ? 1 : 0) : 1;
+  const saMax = b.self_alloc_max !== undefined ? (parseInt(b.self_alloc_max, 10) || 100) : 100;
+  const saPeriods = b.self_alloc_periods || 'weekly,monthly';
+  const ins = db.run(`INSERT INTO ranges (name,prefix,test_number,currency,rate_1_1,rate_7_1,rate_7_7,rate_30_45,memo,payment_type,country,provider,currency_rate,cli_limit,range_start,range_end,status,provider_rate_1_1,provider_rate_7_1,provider_rate_7_7,provider_rate_30_45,self_alloc_enabled,self_alloc_max,self_alloc_periods)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [b.name, b.prefix || '', '', b.currency || 'USD',
-     b.rate_1_1 || 'NA', b.rate_7_1 || 'NA', b.rate_7_7 || 'NA', b.rate_30_45 || 'NA', b.memo || '', normalizePaymentType(b.payment_type || b.payterm || 'weekly')]);
+     b.rate_1_1 || 'NA', b.rate_7_1 || 'NA', b.rate_7_7 || 'NA', b.rate_30_45 || 'NA', b.memo || '', normalizePaymentType(b.payment_type || b.payterm || 'weekly'),
+     b.country || '', b.provider || '', b.currency_rate || '', b.cli_limit || '', b.range_start || '', b.range_end || '', b.status || 'Active',
+     b.provider_rate_1_1 || 'NA', b.provider_rate_7_1 || 'NA', b.provider_rate_7_7 || 'NA', b.provider_rate_30_45 || 'NA',
+     saEnabled, saMax, saPeriods]);
   const newRange = db.get('SELECT id FROM ranges WHERE name=? ORDER BY id DESC LIMIT 1', [b.name]);
   syncRangeTestNumbers(newRange ? newRange.id : ins.lastInsertRowid, b.test_numbers || b.test_number || '');
   logAction(req,'create_range','ranges',b.name);
-  res.json({ ok: true });
+      res.json({ ok: true });
 });
 
 function parseBulkRangeNames(value) {
@@ -1315,7 +1574,7 @@ app.post('/api/ranges/bulk-create', authRequired, requireRole('admin'), (req, re
   }
   clearApiReadCache();
   logAction(req, 'bulk_create_ranges', 'ranges', { inserted, restored, skipped, total: names.length });
-  res.json({ ok: true, inserted, restored, skipped, total: names.length, created, existing });
+      res.json({ ok: true, inserted, restored, skipped, total: names.length, created, existing });
 });
 
 function normalizeRangeImportRow(row) {
@@ -1484,12 +1743,19 @@ app.post('/api/ranges/import', authRequired, requireRole('admin'), (req,res)=>{
 });
 app.put('/api/ranges/:id', authRequired, requireRole('admin'), (req, res) => {
   const b = req.body || {};
-  db.run(`UPDATE ranges SET name=?,prefix=?,currency=?,rate_1_1=?,rate_7_1=?,rate_7_7=?,rate_30_45=?,memo=?,payment_type=? WHERE id=?`,
+  /* P19k #4: provider_rate_* bhi admin hi set kar sakta hai (route admin-only hai) */
+  const saEnabled = b.self_alloc_enabled !== undefined ? (b.self_alloc_enabled ? 1 : 0) : 1;
+  const saMax = b.self_alloc_max !== undefined ? (parseInt(b.self_alloc_max, 10) || 100) : 100;
+  const saPeriods = b.self_alloc_periods || 'weekly,monthly';
+  db.run(`UPDATE ranges SET name=?,prefix=?,currency=?,rate_1_1=?,rate_7_1=?,rate_7_7=?,rate_30_45=?,memo=?,payment_type=?,country=?,provider=?,currency_rate=?,cli_limit=?,range_start=?,range_end=?,status=?,provider_rate_1_1=?,provider_rate_7_1=?,provider_rate_7_7=?,provider_rate_30_45=?,self_alloc_enabled=?,self_alloc_max=?,self_alloc_periods=? WHERE id=?`,
     [b.name, b.prefix || '', b.currency || 'USD',
-     b.rate_1_1 || 'NA', b.rate_7_1 || 'NA', b.rate_7_7 || 'NA', b.rate_30_45 || 'NA', b.memo || '', normalizePaymentType(b.payment_type || 'weekly'), +req.params.id]);
+     b.rate_1_1 || 'NA', b.rate_7_1 || 'NA', b.rate_7_7 || 'NA', b.rate_30_45 || 'NA', b.memo || '', normalizePaymentType(b.payment_type || 'weekly'),
+     b.country || '', b.provider || '', b.currency_rate || '', b.cli_limit || '', b.range_start || '', b.range_end || '', b.status || 'Active',
+     b.provider_rate_1_1 || 'NA', b.provider_rate_7_1 || 'NA', b.provider_rate_7_7 || 'NA', b.provider_rate_30_45 || 'NA',
+     saEnabled, saMax, saPeriods, +req.params.id]);
   syncRangeTestNumbers(+req.params.id, b.test_numbers || b.test_number || '');
   logAction(req,'update_range','ranges',{id:+req.params.id});
-  res.json({ ok: true });
+    res.json({ ok: true });
 });
 app.delete('/api/ranges/:id', authRequired, requireRole('admin'), (req, res) => {
   const rangeId = +req.params.id;
@@ -1500,7 +1766,17 @@ app.delete('/api/ranges/:id', authRequired, requireRole('admin'), (req, res) => 
   let rangeSmsDeleted = 0, rangeSmsPreserved = 0;
   const rangeSmsCount = db.get('SELECT COUNT(*) c FROM sms_records WHERE range_id=?', [rangeId])?.c || 0;
   if (deleteSms) {
+    /* P19b FIX (P19k #5 me resync-based upgrade): ye orphan SMS rows (inki numbers pehle
+       delete ho chuki thin, is liye upar wale deleteNumbersWhere ne inhe nahi chhoda)
+       stats me abhi bhi ginti hoti thin — ab delete se pehle affected keys collect hoti
+       hain aur records delete hone ke BAAD exact-resync unhe remaining records se
+       recompute karta hai (pre-existing drift bhi heal). */
+    let affKeys = [];
+    try { affKeys = planSmsStatsResync('range_id=?', [rangeId]); } catch (e) { console.warn('[DELETE-RANGE] stats key collection failed:', e.message); }
     db.run('DELETE FROM sms_records WHERE range_id=?', [rangeId]);
+    let res = { deferred: false };
+    try { res = resyncStatsKeys(affKeys); } catch (e) { console.warn('[DELETE-RANGE] stats resync failed:', e.message); }
+    if (res.deferred) scheduleStatsFullRebuild('range-delete');
     rangeSmsDeleted = rangeSmsCount;
   } else {
     rangeSmsPreserved = rangeSmsCount;
@@ -1509,7 +1785,7 @@ app.delete('/api/ranges/:id', authRequired, requireRole('admin'), (req, res) => 
   // Soft-delete the range so historical SMS reports can still show the old range name via joins.
   db.run("UPDATE ranges SET deleted_at=datetime('now') WHERE id=?", [rangeId]);
   logAction(req,'delete_range','ranges',{id:rangeId,range:range.name,deleteSms,numberResult,rangeSmsDeleted,rangeSmsPreserved});
-  res.json({ ok: true, deleted_range: 1, deleted_numbers: numberResult.deleted || 0, deleted_sms: (numberResult.deleted_sms || 0) + rangeSmsDeleted, preserved_sms: (numberResult.preserved_sms || 0) + rangeSmsPreserved });
+    res.json({ ok: true, deleted_range: 1, deleted_numbers: numberResult.deleted || 0, deleted_sms: (numberResult.deleted_sms || 0) + rangeSmsDeleted, preserved_sms: (numberResult.preserved_sms || 0) + rangeSmsPreserved });
 });
 
 app.get('/api/test-numbers', authRequired, (req, res) => cachedJson(req, res, 3000, () => {
@@ -1587,6 +1863,49 @@ app.delete('/api/test-numbers/:id', authRequired, requireRole('admin'), (req, re
   db.run('UPDATE ranges SET test_number=? WHERE id=?', [joined, row.range_id]);
   logAction(req, 'delete_test_number', 'test_numbers', { id, number: row.test_number, range_id: row.range_id });
   res.json({ ok: true, deleted: 1 });
+});
+
+/* WHIZZ FINAL A4: selective bulk delete of Test Panel numbers (admin).
+   Only range_test_numbers rows are removed (never live inventory numbers);
+   ranges.test_number is resynced per affected range — same semantics as the
+   single-row DELETE above. */
+app.post('/api/test-numbers/delete', authRequired, requireRole('admin'), (req, res) => {
+  const ids = Array.isArray(req.body && req.body.ids)
+    ? [...new Set(req.body.ids.map(x => parseInt(x, 10)).filter(x => Number.isFinite(x) && x > 0))]
+    : [];
+  if (!ids.length) return res.status(400).json({ error: 'ids[] required' });
+  const rangeIds = new Set();
+  let deleted = 0;
+  for (const id of ids) {
+    const row = db.get('SELECT * FROM range_test_numbers WHERE id=?', [id]);
+    if (!row) continue;
+    db.run('DELETE FROM range_test_numbers WHERE id=?', [id]);
+    rangeIds.add(row.range_id);
+    deleted++;
+  }
+  for (const rid of rangeIds) {
+    const joined = db.all('SELECT test_number FROM range_test_numbers WHERE range_id=? AND active=1 ORDER BY id', [rid]).map(x => x.test_number).join(', ');
+    db.run('UPDATE ranges SET test_number=? WHERE id=?', [joined, rid]);
+  }
+  logAction(req, 'delete_test_numbers_bulk', 'test_numbers', { count: deleted, ids: ids.slice(0, 50) });
+  bumpNumbersVer();
+  clearApiReadCache();
+  res.json({ ok: true, deleted });
+});
+
+/* WHIZZ FINAL A4: selective delete of Test Panel SMS/OTP records (admin).
+   Safety: the predicate COALESCE(is_test,0)=1 is the EXACT same identifier
+   GET /api/test-panel/sms uses to serve these rows — production SMS
+   (is_test=0) can never match, even if ids are tampered with. */
+app.post('/api/test-panel/sms/delete', authRequired, requireRole('admin'), (req, res) => {
+  const ids = Array.isArray(req.body && req.body.ids)
+    ? [...new Set(req.body.ids.map(x => parseInt(x, 10)).filter(x => Number.isFinite(x) && x > 0))]
+    : [];
+  if (!ids.length) return res.status(400).json({ error: 'ids[] required' });
+  const inClause = ids.map(() => '?').join(',');
+  const del = db.run(`DELETE FROM sms_records WHERE COALESCE(is_test,0)=1 AND id IN (${inClause})`, ids);
+  logAction(req, 'delete_test_panel_sms_selected', 'test_panel', { count: del.changes || 0, ids: ids.slice(0, 50) });
+  res.json({ ok: true, deleted: del.changes || 0 });
 });
 
 app.get('/api/test-panel/dashboard', authRequired, requireRole('admin','manager','agent','client','test'), (req, res) => {
@@ -1804,12 +2123,9 @@ function numberFromSql(where, need = {}) {
 function numberSelectSql(where, options = {}) {
   const lastSms = options.lastSms ? `,
             (SELECT MAX(s.received_at) FROM sms_records s WHERE s.number=n.number AND COALESCE(s.is_test,0)=0) AS last_sms_at` : '';
-  // Display query: LIMIT-bounded, so keeping display JOINs here is cheap.
-  // sharing_users becomes a scalar subquery (no row duplication).
-  return `SELECT n.*, r.name AS range_name,
-            COALESCE(
-      NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),''),
-      CASE
+  const role = options.role || (options.user && options.user.role) || '';
+
+  const cardRateExpr = `CASE
         WHEN UPPER(TRIM(COALESCE(n.payterm, r.payment_type,'')))  LIKE '%30%'
           OR UPPER(TRIM(COALESCE(n.payterm, r.payment_type,'')))  LIKE '%MONTH%'
           THEN NULLIF(NULLIF(UPPER(TRIM(COALESCE(r.rate_30_45,''))),'NA'),'')
@@ -1824,8 +2140,41 @@ function numberSelectSql(where, options = {}) {
       NULLIF(NULLIF(UPPER(TRIM(COALESCE(r.rate_7_7,''))),'NA'),''),
       NULLIF(NULLIF(UPPER(TRIM(COALESCE(r.rate_1_1,''))),'NA'),''),
       NULLIF(NULLIF(UPPER(TRIM(COALESCE(r.rate_30_45,''))),'NA'),''),
-      '0') AS effective_rate,
-            CASE WHEN n.manager_id IS NOT NULL THEN 'manager' WHEN n.agent_id IS NOT NULL THEN 'agent' WHEN n.client_id IS NOT NULL THEN 'client' ELSE 'unallocated' END AS owner_type,
+      '0'`;
+
+  let effExpr = '';
+  if (role === 'manager') {
+    effExpr = `COALESCE(
+      NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.manager_rate,''))),'NA'),''),
+      NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),''),
+      ${cardRateExpr})`;
+  } else if (role === 'agent') {
+    effExpr = `COALESCE(
+      NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.agent_rate,''))),'NA'),''),
+      CASE WHEN n.manager_id IS NULL THEN NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),'') ELSE NULL END,
+      ${cardRateExpr})`;
+  } else if (role === 'client') {
+    effExpr = `COALESCE(
+      NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.client_rate,''))),'NA'),''),
+      NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.payout,''))),'NA'),''),
+      '0')`;
+  } else {
+    // Admin or unspecified: displays the rate Admin assigned to the top assigned tier
+    effExpr = `COALESCE(
+      CASE
+        WHEN n.manager_id IS NOT NULL THEN COALESCE(NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.manager_rate,''))),'NA'),''), NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),''))
+        WHEN n.agent_id IS NOT NULL THEN COALESCE(NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.agent_rate,''))),'NA'),''), NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),''))
+        WHEN n.client_id IS NOT NULL THEN COALESCE(NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.client_rate,''))),'NA'),''), NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.payout,''))),'NA'),''))
+        ELSE NULLIF(NULLIF(UPPER(TRIM(COALESCE(n.rate,''))),'NA'),'')
+      END,
+      ${cardRateExpr})`;
+  }
+
+  // Display query: LIMIT-bounded, so keeping display JOINs here is cheap.
+  // sharing_users becomes a scalar subquery (no row duplication).
+  return `SELECT n.*, r.name AS range_name, r.provider AS range_provider,
+            ${effExpr} AS effective_rate,
+            CASE WHEN n.client_id IS NOT NULL THEN 'client' WHEN n.agent_id IS NOT NULL THEN 'agent' WHEN n.manager_id IS NOT NULL THEN 'manager' ELSE 'unallocated' END AS owner_type,
             cu.username AS client_name,
             COALESCE((SELECT s1.panel_name FROM sharing_users s1 WHERE s1.agent_user_id=n.agent_id ORDER BY s1.id LIMIT 1), au.username) AS agent_name,
             au.username AS agent_username,
@@ -1845,7 +2194,7 @@ app.get('/api/numbers/summary', authRequired, (req, res) => cachedJson(req, res,
       COUNT(n.id) AS total,
       SUM(CASE WHEN n.id IS NOT NULL AND NOT (${ownerExpr}) THEN 1 ELSE 0 END) AS available,
       SUM(CASE WHEN n.id IS NOT NULL AND ${ownerExpr} THEN 1 ELSE 0 END) AS allocated,
-      COALESCE(NULLIF(r.rate_7_1,''), NULLIF(r.rate_7_7,''), NULLIF(r.rate_30_45,''), NULLIF(r.rate_1_1,''), '0') AS rate
+      COALESCE(NULLIF(NULLIF(r.rate_7_1,'NA'),''), NULLIF(NULLIF(r.rate_7_7,'NA'),''), NULLIF(NULLIF(r.rate_30_45,'NA'),''), NULLIF(NULLIF(r.rate_1_1,'NA'),''), '0') AS rate
     FROM ranges r
     LEFT JOIN numbers n ON n.range_id=r.id AND ${scope.where}
     WHERE COALESCE(r.deleted_at,'')=''
@@ -1862,10 +2211,71 @@ const NUMBER_PAGE_DEFAULT = 25;
 // Admin "All" views may use up to NUMBER_PAGE_MAX_ADMIN (default 5,000).
 const NUMBER_PAGE_MAX = Math.max(100, parseInt(process.env.NUMBER_PAGE_MAX || '1000', 10) || 1000);
 const NUMBER_PAGE_MAX_ADMIN = Math.max(NUMBER_PAGE_MAX, parseInt(process.env.NUMBER_PAGE_MAX_ADMIN || '5000', 10) || 5000);
+/* P11: ROLE-BASED PAGE CEILINGS — backend-enforced (frontend options per role are cosmetic; THIS is the law).
+   A lower-role user cannot get a bigger page by tampering with limit/all params: values are clamped here.
+   Previous behaviour (recorded for rollback): every role capped at NUMBER_PAGE_MAX (1000);
+   admin 'all' capped at NUMBER_PAGE_MAX_ADMIN (5000). */
+const ROLE_PAGE_MAX = { admin: 100000, manager: 5000, agent: 5000, client: 500, test: 500 };
+const ROLE_ALL_MAX  = { admin: 200000 }; /* 'All' page-size allowed for admin only; others fall back to their role cap */
+function rolePageMax(role) { return ROLE_PAGE_MAX[role] || 500; }
+/* P11: memory-safe big-page responses. Pages <= STREAM_JSON_MAX_ROWS are built
+   normally (and cached); larger pages stream row-by-row from the SQLite cursor so
+   peak memory stays flat (a 100k-row res.json() triple-copies ~60MB+ and can OOM).
+   Response JSON shape is IDENTICAL to the cached path. */
+const STREAM_JSON_MAX_ROWS = 5000;
+function sendPagedStreaming(res, tailFields, sql, params, mapRow) {
+  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.write('{"rows":[');
+  let first = true, buf = [], n = 0, lastRow = null;
+  const PUSH = (row) => {
+    if (mapRow) { const m = mapRow(row); if (m) row = m; }
+    lastRow = row;
+    buf.push(JSON.stringify(row));
+    if (buf.length >= 500) { res.write((first ? '' : ',') + buf.join(',')); first = false; buf = []; }
+  };
+  for (const row of db.iterate(sql, params)) { PUSH(row); n++; }
+  if (buf.length) res.write((first ? '' : ',') + buf.join(','));
+  let out = '';
+  out += '],"rows_count":' + n;
+  for (const [k, v] of Object.entries(tailFields || {})) out += ',' + JSON.stringify(k) + ':' + JSON.stringify(v === undefined ? null : v);
+  res.end(out + '}');
+}
 function parsePositiveInt(v, fallback) {
   const n = parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
+/* P11: streaming big-page route (must stay registered ABOVE the cached small-page route).
+   Pages > STREAM_JSON_MAX_ROWS stream row-by-row (flat memory, identical JSON shape). */
+app.get('/api/numbers', authRequired, (req, res, next) => {
+  const q = req.query || {};
+  const paged = q.paged || q.page || q.limit;
+  if (!paged) return next();
+  const limitRaw = String(q.limit || NUMBER_PAGE_DEFAULT);
+  const isAllReq = limitRaw.toLowerCase() === 'all';
+  const numericReq = parsePositiveInt(limitRaw, 0);
+  const roleCap = rolePageMax(req.user.role);
+  const bigLimit = isAllReq ? (ROLE_ALL_MAX[req.user.role] || roleCap)
+                 : (numericReq > STREAM_JSON_MAX_ROWS ? Math.min(numericReq, roleCap) : 0);
+  if (!bigLimit) return next();
+  try {
+    const query = buildNumberQuery(req.user, q);
+    const countFrom = numberFromSql(query.where, query.need);
+    const total = +(db.get(`SELECT COUNT(*) AS c ${countFrom}`, query.params)?.c || 0);
+    const limit = isAllReq ? Math.min(bigLimit, Math.max(1, total || 1)) : bigLimit;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const page = Math.min(Math.max(1, parsePositiveInt(q.page || '1', 1)), totalPages);
+    const offset = (page - 1) * limit;
+    const sortMap = { range:'r.name COLLATE NOCASE', prefix:'n.prefix COLLATE NOCASE', number:'n.number', myVal:"CAST(COALESCE(NULLIF(n.rate,''),'0') AS REAL)", payVal:"CAST(COALESCE(NULLIF(n.payout,''),'0') AS REAL)", manager:'mu.username COLLATE NOCASE', agent:'au.username COLLATE NOCASE', client:'cu.username COLLATE NOCASE', owner:"COALESCE(mu.username,au.username,cu.username,'') COLLATE NOCASE" };
+    const sortCol = sortMap[q.sort] || 'n.number';
+    const dir = String(q.dir || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    sendPagedStreaming(res,
+      { total, page, limit, totalPages, role_max: roleCap, count_source: 'fast_database_count' },
+      `${numberSelectSql(query.where, { role: req.user.role })} ORDER BY ${sortCol} ${dir}, n.id ASC LIMIT ? OFFSET ?`,
+      [...query.params, limit, offset], null);
+  } catch (e) { console.warn('numbers stream failed', e.message); if (res.headersSent) { try { res.end(); } catch (_) {} } else res.status(500).json({ error: 'Query failed' }); }
+});
+
 app.get('/api/numbers', authRequired, (req, res) => cachedJson(req, res, 60000, () => {
   const query = buildNumberQuery(req.user, req.query || {});
 
@@ -1876,10 +2286,11 @@ app.get('/api/numbers', authRequired, (req, res) => cachedJson(req, res, 60000, 
   const total = +(db.get(`SELECT COUNT(*) AS c ${countFrom}`, query.params)?.c || 0);
 
   const paged = req.query.paged || req.query.page || req.query.limit;
+  const roleCap = rolePageMax(req.user.role); /* P11: per-role ceiling, clamped below */
   if (paged) {
     const requestedLimitRaw = String(req.query.limit || NUMBER_PAGE_DEFAULT);
     const isAll = requestedLimitRaw.toLowerCase() === 'all';
-    const hardCap = (isAll && req.user.role === 'admin') ? NUMBER_PAGE_MAX_ADMIN : NUMBER_PAGE_MAX;
+    const hardCap = isAll ? (ROLE_ALL_MAX[req.user.role] || roleCap) : roleCap;
     const requestedLimit = isAll ? Math.max(1, Math.min(total || 1, hardCap)) : parsePositiveInt(requestedLimitRaw, NUMBER_PAGE_DEFAULT);
     const limit = Math.min(hardCap, Math.max(1, requestedLimit));
     const totalPages = isAll ? 1 : Math.max(1, Math.ceil(total / limit));
@@ -1890,16 +2301,37 @@ app.get('/api/numbers', authRequired, (req, res) => cachedJson(req, res, 60000, 
     const sortCol = sortMap[req.query.sort] || 'n.number';
     const dir = String(req.query.dir||'asc').toLowerCase()==='desc'?'DESC':'ASC';
     const withLastSms = String(req.query.last_sms || req.query.include_last_sms || '') === '1';
-    const rows = db.all(`${numberSelectSql(query.where, { lastSms: withLastSms })} ORDER BY ${sortCol} ${dir}, n.id ASC LIMIT ? OFFSET ?`, [...query.params, limit, offset]);
-    return { rows, total, page, limit, totalPages, count_source: 'fast_database_count', capped: total > limit * totalPages && total > hardCap ? hardCap : undefined };
+    const rows = db.all(`${numberSelectSql(query.where, { role: req.user.role, lastSms: withLastSms })} ORDER BY ${sortCol} ${dir}, n.id ASC LIMIT ? OFFSET ?`, [...query.params, limit, offset]);
+    return { rows, total, page, limit, totalPages, role_max: roleCap, count_source: 'fast_database_count', capped: total > limit * totalPages && total > hardCap ? hardCap : undefined };
   }
 
-  const rows = db.all(`${numberSelectSql(query.where)} ORDER BY n.number ASC`, query.params);
+  let rows = db.all(`${numberSelectSql(query.where, { role: req.user.role })} ORDER BY n.number ASC`, query.params);
+  /* P11: legacy full-list path capped for non-admin roles (admin keeps legacy full dump for exports) */
+  if (req.user.role !== 'admin' && rows.length > roleCap) rows = rows.slice(0, roleCap);
   return rows;
 }, 'numbers_ver'));
 
 // allocate selected numbers to a target user (one level down)
-app.post('/api/numbers/allocate', authRequired, (req, res) => {
+/* HIERARCHY TIER ALLOCATION RATE OVERRIDE — shared validator (handleAllocate + smart-divide).
+   Supports Admin, Manager, and Agent allocation tiers. Positive decimal, <=6 dp, <=100000. */
+function validatedAllocationRate(user, raw, targetRole = '') {
+  if (!user || !['admin', 'manager', 'agent'].includes(user.role)) return { ok: true, value: '' };
+  if (raw === undefined || String(raw).trim() === '') return { ok: true, value: '' };
+  const str = String(raw).trim();
+  if (str.startsWith('-'))
+    return { ok: false, error: 'Invalid rate: positive decimal number required (e.g. 0.013)' };
+  if (targetRole === 'client' && (str === '0' || /^0+(\.0+)?$/.test(str))) {
+    return { ok: true, value: '0' };
+  }
+  const v = normalizeDecimalString(str);
+  if (!isPositiveDecimal(v)) return { ok: false, error: 'Invalid rate: positive decimal number required (e.g. 0.013)' };
+  const dp = (v.split('.')[1] || '').length;
+  if (dp > 6) return { ok: false, error: 'Invalid rate: max 6 decimal places' };
+  if (parseFloat(v) > 100000) return { ok: false, error: 'Invalid rate: value too large' };
+  return { ok: true, value: v };
+}
+
+function handleAllocate(req, res) {
   const { ids, target_id, payterm, payout } = req.body || {};
   if (!Array.isArray(ids) || !ids.length || !target_id)
     return res.status(400).json({ error: 'ids[] and target_id are required' });
@@ -1921,34 +2353,73 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
   const target = db.get('SELECT * FROM users WHERE id=?', [target_id]);
   if (!target) return res.status(404).json({ error: 'Target not found' });
 
-  const allowedTargets = { admin: ['manager','agent'], manager: ['agent'], agent: ['client'] }[req.user.role] || [];
+  const allowedTargets = {
+    admin: ['manager'], /* WHIZZ FINAL A9: Admin allocates SMS Numbers to Managers only.
+                           Direct Admin->Agent / Admin->Client is removed from this flow —
+                           the Manager->Agent->Client hierarchy handles downstream allocation. */
+    manager: ['agent', 'client'],
+    agent: ['client']
+  }[req.user.role] || [];
   if (!allowedTargets.includes(target.role))
     return res.status(403).json({ error: 'You are not allowed to allocate to this role' });
-  // Managers/Agents can allocate only to their direct child. Admin can allocate directly to any Manager or Agent.
-  if (req.user.role !== 'admin' && target.parent_id !== req.user.id)
-    return res.status(403).json({ error: 'You can only allocate to your direct child user' });
+
+  // Hierarchy scope check: caller can only allocate to users in their own hierarchy
+  if (req.user.role !== 'admin') {
+    const allowedUserIds = scopeIds(req.user);
+    if (!allowedUserIds.includes(target.id))
+      return res.status(403).json({ error: 'You can only allocate to users in your own hierarchy' });
+  }
+
+  const rawRate = (req.body && req.body.rate !== undefined) ? req.body.rate : (req.body ? req.body.payout : undefined);
+  const rateCheck = validatedAllocationRate(req.user, rawRate, target.role);
+  if (!rateCheck.ok) return res.status(400).json({ error: rateCheck.error });
+  const rateVal = rateCheck.value;
 
   let sets = '', vals = [];
   if (target.role === 'manager') {
-    // Admin -> Manager: reset downstream ownership so old Agent/Client links do not remain.
-    sets = "manager_id=?, agent_id=NULL, client_id=NULL, payout='0', rate=''";
-    vals = [target.id];
+    // Admin -> Manager: sets Manager's rate. Clears downstream links and downstream rates.
+    sets = "manager_id=?, agent_id=NULL, client_id=NULL, manager_rate=?, agent_rate='', client_rate='', payout='0', rate=?";
+    vals = [target.id, rateVal, rateVal];
   } else if (target.role === 'agent') {
-    // Manager -> Agent keeps manager chain. Admin -> Agent direct has no manager owner.
-    const mgrId = req.user.role === 'admin' ? null : target.parent_id;
-    sets = "agent_id=?, manager_id=?, client_id=NULL, payout='0', rate=''";
-    vals = [target.id, mgrId];
+    if (req.user.role === 'admin') {
+      const agentMgr = getAgentManager(target.id);
+      if (agentMgr) {
+        // Scenario B: Manager Agent — follows hierarchy Admin -> Manager A -> Agent
+        sets = "agent_id=?, manager_id=?, client_id=NULL, agent_rate=?, client_rate='', payout='0', rate=?";
+        vals = [target.id, agentMgr.id, rateVal, rateVal];
+      } else {
+        // Scenario A: Direct Admin Agent — no manager in chain
+        sets = "agent_id=?, manager_id=NULL, client_id=NULL, manager_rate='', agent_rate=?, client_rate='', payout='0', rate=?";
+        vals = [target.id, rateVal, rateVal];
+      }
+    } else {
+      // Manager -> Agent: manager_rate and numbers.rate PRESERVED!
+      sets = "agent_id=?, manager_id=?, client_id=NULL, agent_rate=?, client_rate='', payout='0'";
+      vals = [target.id, req.user.id, rateVal];
+    }
   } else if (target.role === 'client') {
-    // Agent -> Client: snapshot chain for future SMS.
-    const agentId = target.parent_id;
-    const mgrId = agentId ? (db.get('SELECT parent_id FROM users WHERE id=?', [agentId])?.parent_id || null) : null;
-    sets = 'client_id=?, agent_id=?, manager_id=?';
-    vals = [target.id, agentId, mgrId];
+    const clientPay = rateVal !== '' ? rateVal : '0';
+    if (req.user.role === 'admin') {
+      // Admin -> Client direct
+      sets = "client_id=?, agent_id=NULL, manager_id=NULL, manager_rate='', agent_rate='', client_rate=?, payout=?, rate=?";
+      vals = [target.id, clientPay, clientPay, clientPay];
+    } else if (req.user.role === 'manager') {
+      // Manager -> Client direct: manager_rate PRESERVED!
+      sets = "client_id=?, manager_id=?, agent_id=NULL, agent_rate='', client_rate=?, payout=?";
+      vals = [target.id, req.user.id, clientPay, clientPay];
+    } else {
+      // Agent -> Client: manager_rate and agent_rate PRESERVED!
+      const mgrId = agentManagerId(req.user.id);
+      sets = "client_id=?, agent_id=?, manager_id=COALESCE(manager_id, ?), client_rate=?, payout=?";
+      vals = [target.id, req.user.id, mgrId, clientPay, clientPay];
+    }
   }
-  if (target.role === 'agent' && payterm) { const pt=normalizePaymentCycle(payterm); sets += ', payterm=?'; vals.push(pt); try{ db.run('UPDATE users SET payment_type=? WHERE id=? AND role=\'agent\'',[pt,target.id]); }catch(e){} }
-  // Rate lock rule: Admin->Manager and Manager->Agent must keep the existing/Admin rate.
-  // Only Agent->Client can set/change client payout.
-  if (req.user.role === 'agent' && payout !== undefined && payout !== '') { sets += ', payout=?'; vals.push(String(payout)); }
+
+  if (payterm) {
+    const pt = normalizePaymentCycle(payterm);
+    sets += ', payterm=?';
+    vals.push(pt);
+  }
 
   // PHASE-1 (#21–#25): transactional, guarded, chunk-free allocation.
   //  - temp table instead of WHERE id IN (?,?,…) → SQLite 32,761 variable
@@ -1961,10 +2432,8 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
   //  - single BEGIN IMMEDIATE transaction → concurrent duplicate requests can
   //    no longer both "succeed" (race condition [audit-confirmed] fixed).
   const slotCol = { manager: 'manager_id', agent: 'agent_id', client: 'client_id' }[target.role];
-  const force = truthy(req.body && req.body.force) && slotCol !== undefined; // callers are never clients, but stay defensive
+  const force = truthy(req.body && req.body.force) && slotCol !== undefined;
   const scope = numberScope(req.user, 'n');
-  const ownGuard = force ? '1=1'
-    : `((n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL) OR n.${slotCol}=?)`;
 
   const TEMP = 'tmp_alloc_ids';
   let allocatedCount = 0;
@@ -1985,10 +2454,13 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
       if (db.inTransaction()) db.exec('COMMIT');
       return res.status(404).json({ error: 'No numbers found' });
     }
-    const updParams = force ? [...vals, ...scope.params] : [...vals, ...scope.params, target.id];
+    // Direct Reassignment for SMS Numbers:
+    // Authorized callers can directly move numbers between permitted owners
+    // within their scope (e.g. Client A -> Client B) without manual unallocation first.
+    const updParams = [...vals, ...scope.params];
     const upd = db.runNoSave(
       `UPDATE numbers AS n SET ${sets}
-       WHERE n.id IN (SELECT id FROM ${TEMP}) AND (${scope.where}) AND ${ownGuard}`,
+       WHERE n.id IN (SELECT id FROM ${TEMP}) AND (${scope.where})`,
       updParams);
     allocatedCount = upd.changes || 0;
     // capture the post-state rows we actually own now (for history + response)
@@ -1997,11 +2469,11 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
     db.execNoSave(`DROP TABLE IF EXISTS ${TEMP}`);
     if (db.inTransaction()) db.exec('COMMIT');
 
-    const conflictRows = beforeRows.filter(r => (r.manager_id || r.agent_id || r.client_id) && r[slotCol] !== target.id);
+    const conflictRows = beforeRows.filter(r => (r.manager_id || r.agent_id || r.client_id) && r[slotCol] && r[slotCol] !== target.id);
     // history only for rows this call actually set to the target (before-state kept)
     try {
       db.beginBatch();
-      for (const nr of afterRows) logNumberHistory(req, nr, 'allocated', '', target.username, { target_role: target.role, forced: force || undefined });
+      for (const nr of afterRows) logNumberHistory(req, nr, 'allocated', '', target.username, { target_role: target.role, forced: force || undefined, reassigned: conflictRows.length > 0 });
     } finally { db.endBatch(); }
 
     const response = {
@@ -2010,12 +2482,13 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
       requested: beforeRows.length,
       allocated: allocatedCount,
       skipped: Math.max(0, beforeRows.length - allocatedCount),
-      ...(force && conflictRows.length ? { reassigned: conflictRows.length } : {}),
+      ...(conflictRows.length ? { reassigned: conflictRows.length } : {}),
       ...(conflictRows.length && !force ? { conflicts_sample: conflictRows.slice(0, 10).map(r => ({ id: r.id, number: r.number })) } : {}),
     };
     logAction(req, 'allocate_numbers', 'numbers',
-      { count: allocatedCount, requested: beforeRows.length, skipped: response.skipped, target: target.username, target_role: target.role, ...(force ? { force: true } : {}) });
+      { count: allocatedCount, requested: beforeRows.length, skipped: response.skipped, target: target.username, target_role: target.role, ...(rateVal ? { rate_override: rateVal } : {}), ...(force ? { force: true } : {}) });
     bumpNumbersVer();
+    if (app.broadcastSseAll) app.broadcastSseAll('allocation_update', { action: 'allocate', count: allocatedCount, target_id: target.id, target_role: target.role, timestamp: Date.now() });
     if (idemKey) idempotencyStore(req, 'allocate', idemKey, response);
     return res.json(response);
   } catch (e) {
@@ -2024,9 +2497,347 @@ app.post('/api/numbers/allocate', authRequired, (req, res) => {
     console.error('[ALLOCATE] failed:', e.message);
     return res.status(500).json({ error: 'Allocation failed: ' + e.message });
   }
-});
+}
 
 // unallocate selected numbers (clear the caller's ownership level downward, without changing old SMS snapshots)
+app.post('/api/numbers/allocate', authRequired, (req, res) => { handleAllocate(req, res); });
+
+/* =========================================================================
+ * PART 3 - 13: AGENT SELF-ALLOCATION API (ATOMIC & LIMIT-ENFORCED)
+ * ========================================================================= */
+
+// GET /api/agent/self-allocate/ranges
+/* WHIZZ FINAL (Manager Self Allocate): this route now serves BOTH agents and managers.
+   Agent flow is byte-identical (numbers pulled from own-manager pool first, then Admin pool,
+   assigned to agent_id). Manager flow pulls strictly monthly and only from the Admin
+   unallocated pool, assigned to manager_id (agent_id stays NULL). */
+app.get("/api/agent/self-allocate/ranges", authRequired, requireRole("manager", "agent"), (req, res) => {
+  try {
+    const agentId = req.user.id;
+    const memberIsManager = req.user.role === "manager";
+    const agentUser = db.get("SELECT id, username, parent_id FROM users WHERE id=?", [agentId]);
+    if (!agentUser) return res.status(404).json({ error: "Account not found" });
+
+    let manager = null;
+    if (!memberIsManager && agentUser.parent_id) {
+      const p = db.get("SELECT id, username, email, whatsapp, contact, role FROM users WHERE id=?", [agentUser.parent_id]);
+      if (p && p.role === "manager") manager = p;
+    }
+    const managerContact = manager ? (manager.whatsapp || manager.contact || manager.email || manager.username) : "Admin Support";
+    const managerName = manager ? manager.username : "Admin";
+
+    const ranges = db.all(`
+      SELECT id, name, prefix, currency, rate_1_1, rate_7_1, rate_7_7, rate_30_45,
+             self_alloc_enabled, self_alloc_max, self_alloc_periods
+      FROM ranges
+      WHERE (deleted_at IS NULL OR COALESCE(deleted_at, '') = '') AND (status IS NULL OR status = 'Active')
+      ORDER BY name ASC
+    `);
+
+    const results = ranges.map(r => {
+      const agentCount = db.get(
+        memberIsManager
+          ? "SELECT COUNT(*) AS c FROM numbers WHERE range_id=? AND manager_id=? AND agent_id IS NULL AND alloc_source='self_allocate'"
+          : "SELECT COUNT(*) AS c FROM numbers WHERE range_id=? AND agent_id=? AND alloc_source='self_allocate'",
+        [r.id, agentId]
+      )?.c || 0;
+
+      let availMgr = 0;
+      if (manager) {
+        availMgr = db.get(
+          "SELECT COUNT(*) AS c FROM numbers WHERE range_id=? AND manager_id=? AND agent_id IS NULL AND client_id IS NULL",
+          [r.id, manager.id]
+        )?.c || 0;
+      }
+      const availAdmin = db.get(
+        "SELECT COUNT(*) AS c FROM numbers WHERE range_id=? AND manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL",
+        [r.id]
+      )?.c || 0;
+      const totalAvail = memberIsManager ? availAdmin : (availMgr + availAdmin);
+
+      const maxLimit = r.self_alloc_max != null ? Number(r.self_alloc_max) : 100;
+      const remainingLimit = Math.max(0, maxLimit - agentCount);
+      const periods = (r.self_alloc_periods || "weekly,monthly").split(",").map(s => s.trim().toLowerCase());
+
+      const baseConfiguredRate = (r.rate_7_1 && r.rate_7_1 !== "NA") ? r.rate_7_1 : ((r.rate_7_7 && r.rate_7_7 !== "NA") ? r.rate_7_7 : ((r.rate_30_45 && r.rate_30_45 !== "NA") ? r.rate_30_45 : ((r.rate_1_1 && r.rate_1_1 !== "NA") ? r.rate_1_1 : "0")));
+      const weeklyRate = (r.rate_7_1 && r.rate_7_1 !== "NA") ? r.rate_7_1 : ((r.rate_7_7 && r.rate_7_7 !== "NA") ? r.rate_7_7 : baseConfiguredRate);
+      const monthlyRate = (r.rate_30_45 && r.rate_30_45 !== "NA") ? r.rate_30_45 : baseConfiguredRate;
+      const dailyRate = (r.rate_1_1 && r.rate_1_1 !== "NA") ? r.rate_1_1 : baseConfiguredRate;
+
+      return {
+        id: r.id,
+        name: r.name,
+        prefix: r.prefix || "",
+        currency: r.currency || "USD",
+        rates: {
+          weekly: weeklyRate,
+          monthly: monthlyRate,
+          daily: dailyRate
+        },
+        self_alloc_enabled: r.self_alloc_enabled !== 0,
+        self_alloc_max: maxLimit,
+        allowed_periods: periods,
+        agent_current_count: agentCount,
+        remaining_limit: remainingLimit,
+        available_in_pool: totalAvail,
+        manager_name: managerName,
+        manager_contact: managerContact
+      };
+    });
+
+    res.json({
+      ok: true,
+      manager_name: managerName,
+      manager_contact: managerContact,
+      ranges: results
+    });
+  } catch (err) {
+    console.error("[SELF-ALLOCATE] GET ranges failed:", err);
+    res.status(500).json({ error: "Failed to load self-allocation ranges: " + err.message });
+  }
+});
+
+// POST /api/agent/self-allocate
+app.post("/api/agent/self-allocate", authRequired, requireRole("manager", "agent"), (req, res) => {
+  const agentId = req.user.id;
+  const memberIsManager = req.user.role === "manager";
+  const b = req.body || {};
+  const rangeId = parseInt(b.range_id, 10);
+  const qty = parseInt(b.quantity, 10);
+  const period = String(b.billing_period || "weekly").trim().toLowerCase();
+
+  if (!rangeId || isNaN(rangeId)) return res.status(400).json({ error: "Valid range ID required" });
+  if (!qty || isNaN(qty) || qty <= 0) return res.status(400).json({ error: "Quantity must be a positive integer" });
+  /* WHIZZ FINAL: strict period rules — Manager monthly only, Agent weekly/monthly only. */
+  if (memberIsManager && period !== "monthly")
+    return res.status(400).json({ error: "Managers can self-allocate monthly (30/45) cycles only." });
+  if (!memberIsManager && period === "daily")
+    return res.status(400).json({ error: "Agents can self-allocate weekly or monthly cycles only." });
+
+  const agentUser = db.get("SELECT id, username, parent_id FROM users WHERE id=?", [agentId]);
+  if (!agentUser) return res.status(404).json({ error: "Account not found" });
+
+  let manager = null;
+  if (!memberIsManager && agentUser.parent_id) {
+    const p = db.get("SELECT id, username, email, whatsapp, contact, role FROM users WHERE id=?", [agentUser.parent_id]);
+    if (p && p.role === "manager") manager = p;
+  }
+  const managerContact = manager ? (manager.whatsapp || manager.contact || manager.email || manager.username) : "Admin Support";
+  const managerName = manager ? manager.username : "Admin";
+
+  const range = db.get("SELECT * FROM ranges WHERE id=? AND (deleted_at IS NULL OR deleted_at = '')", [rangeId]);
+  if (!range) return res.status(404).json({ error: "Range not found" });
+  if (range.status && range.status !== "Active") {
+    return res.status(403).json({ error: "This range is currently inactive." });
+  }
+
+  if (range.self_alloc_enabled === 0) {
+    const contactMsg = manager
+      ? `Please contact your Manager: ${managerName} (${managerContact}).`
+      : `Please contact Admin.`;
+    return res.status(403).json({
+      error: `Self-allocation is currently disabled for this range. ${contactMsg}`
+    });
+  }
+
+  const allowedPeriods = (range.self_alloc_periods || "weekly,monthly").split(",").map(s => s.trim().toLowerCase());
+  if (!allowedPeriods.includes(period)) {
+    return res.status(400).json({
+      error: `Billing period "${period}" is not enabled for self-allocation in this range. Allowed: ${allowedPeriods.join(", ")}`
+    });
+  }
+
+  const baseConfiguredRate = (range.rate_7_1 && range.rate_7_1 !== "NA") ? range.rate_7_1 : ((range.rate_7_7 && range.rate_7_7 !== "NA") ? range.rate_7_7 : ((range.rate_30_45 && range.rate_30_45 !== "NA") ? range.rate_30_45 : ((range.rate_1_1 && range.rate_1_1 !== "NA") ? range.rate_1_1 : "0")));
+  let effectiveRate = "0";
+  let payterm = "weekly_7_1";
+  if (period === "monthly") {
+    effectiveRate = (range.rate_30_45 && range.rate_30_45 !== "NA") ? range.rate_30_45 : baseConfiguredRate;
+    payterm = "monthly_30x45";
+  } else if (period === "daily") {
+    effectiveRate = (range.rate_1_1 && range.rate_1_1 !== "NA") ? range.rate_1_1 : baseConfiguredRate;
+    payterm = "daily";
+  } else {
+    effectiveRate = (range.rate_7_1 && range.rate_7_1 !== "NA") ? range.rate_7_1 : ((range.rate_7_7 && range.rate_7_7 !== "NA") ? range.rate_7_7 : baseConfiguredRate);
+    payterm = "weekly_7_1";
+  }
+
+  const maxLimit = range.self_alloc_max != null ? Number(range.self_alloc_max) : 100;
+  let allocatedNumbers = [];
+
+  try {
+    if (!db.inTransaction()) db.exec("BEGIN IMMEDIATE");
+
+    const currentCount = db.get(
+      memberIsManager
+        ? "SELECT COUNT(*) AS c FROM numbers WHERE range_id=? AND manager_id=? AND agent_id IS NULL AND alloc_source='self_allocate'"
+        : "SELECT COUNT(*) AS c FROM numbers WHERE range_id=? AND agent_id=? AND alloc_source='self_allocate'",
+      [rangeId, agentId]
+    )?.c || 0;
+
+    if (currentCount + qty > maxLimit) {
+      const remaining = Math.max(0, maxLimit - currentCount);
+      if (db.inTransaction()) db.exec("ROLLBACK");
+      return res.status(400).json({
+        error: `Self-allocation limit exceeded: you currently hold ${currentCount} numbers in this range (limit: ${maxLimit}). You can allocate at most ${remaining} more.`
+      });
+    }
+
+    let selectedIds = [];
+    if (!memberIsManager && manager) {
+      const mgrNumbers = db.all(
+        "SELECT id FROM numbers WHERE range_id=? AND manager_id=? AND agent_id IS NULL AND client_id IS NULL ORDER BY id ASC LIMIT ?",
+        [rangeId, manager.id, qty]
+      );
+      selectedIds = mgrNumbers.map(n => n.id);
+    }
+    /* Manager caller: strict Admin-pool-only selection (available numbers = manager_id IS NULL). */
+
+    const needed = qty - selectedIds.length;
+    let adminNumberIds = [];
+    if (needed > 0) {
+      const adminNumbers = db.all(
+        "SELECT id FROM numbers WHERE range_id=? AND manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL ORDER BY id ASC LIMIT ?",
+        [rangeId, needed]
+      );
+      adminNumberIds = adminNumbers.map(n => n.id);
+      selectedIds = selectedIds.concat(adminNumberIds);
+    }
+
+    if (selectedIds.length < qty) {
+      if (db.inTransaction()) db.exec("ROLLBACK");
+      const contactMsg = manager
+        ? `Please contact your Manager: ${managerName} (${managerContact}) to request an allocation.`
+        : `Please contact Admin to request an allocation.`;
+      return res.status(409).json({
+        error: `No numbers are currently available for this range. ${contactMsg}`
+      });
+    }
+
+    if (adminNumberIds.length > 0) {
+      const mgrDefaultRate = effectiveRate;
+      const mgrId = manager ? manager.id : null;
+      for (const numId of adminNumberIds) {
+        if (memberIsManager) {
+          /* WHIZZ FINAL: manager takes Admin-unallocated numbers into OWN inventory —
+             manager_id=caller, agent links cleared, rate/payterm recorded. */
+          db.runNoSave(
+            `UPDATE numbers
+             SET manager_id = ?,
+                 manager_rate = CASE WHEN (manager_rate IS NULL OR COALESCE(manager_rate, '') = '') THEN ? ELSE manager_rate END,
+                 agent_id = NULL, agent_rate = '',
+                 client_id = NULL, client_rate = '',
+                 rate = ?, payterm = ?, alloc_source = 'self_allocate'
+             WHERE id = ?`,
+            [agentId, effectiveRate, effectiveRate, payterm, numId]
+          );
+        } else {
+          db.runNoSave(
+            `UPDATE numbers
+             SET manager_id = COALESCE(?, manager_id),
+                 manager_rate = CASE WHEN ? IS NOT NULL AND (manager_rate IS NULL OR COALESCE(manager_rate, '') = '') THEN ? ELSE manager_rate END,
+                 agent_id = ?,
+                 agent_rate = ?,
+                 rate = ?,
+                 payterm = ?,
+                 alloc_source = 'self_allocate'
+             WHERE id = ?`,
+            [mgrId, mgrId, mgrDefaultRate, agentId, effectiveRate, effectiveRate, payterm, numId]
+          );
+        }
+      }
+    }
+
+    const mgrOnlyIds = selectedIds.filter(id => !adminNumberIds.includes(id));
+    if (mgrOnlyIds.length > 0) {
+      for (const numId of mgrOnlyIds) {
+        db.runNoSave(
+          `UPDATE numbers
+           SET agent_id = ?,
+               agent_rate = ?,
+               rate = ?,
+               payterm = ?,
+               alloc_source = 'self_allocate'
+           WHERE id = ?`,
+          [agentId, effectiveRate, effectiveRate, payterm, numId]
+        );
+      }
+    }
+
+    const inClause = selectedIds.map(() => "?").join(",");
+    const numRows = db.all(`SELECT id, number, range_id, manager_id, agent_id, client_id FROM numbers WHERE id IN (${inClause})`, selectedIds);
+    allocatedNumbers = numRows.map(r => r.number);
+
+    for (const nr of numRows) {
+      try {
+        logNumberHistory(req, nr, "allocated", "", agentUser.username, {
+          target_role: memberIsManager ? "manager" : "agent",
+          source: "self_allocate",
+          range: range.name,
+          rate: effectiveRate,
+          payterm
+        });
+      } catch (_) {}
+    }
+
+    db.runNoSave(
+      `INSERT INTO audit_logs (user_id, username, role, action, module, details, ip)
+       VALUES (?, ?, ?, ?, 'self_allocate', ?, ?)`,
+      [
+        agentId,
+        agentUser.username,
+        req.user.role,
+        memberIsManager ? "manager_self_allocate" : "agent_self_allocate",
+        JSON.stringify({
+          self_actor_role: req.user.role,
+          [memberIsManager ? "manager_id" : "agent_id"]: agentId,
+          [memberIsManager ? "manager" : "agent"]: agentUser.username,
+          /* original parent-manager audit keys preserved verbatim */
+          manager_parent_id: manager ? manager.id : null,
+          manager_parent: managerName,
+          range_id: rangeId,
+          range: range.name,
+          quantity: qty,
+          billing_period: period,
+          payterm: payterm,
+          effective_rate: effectiveRate,
+          numbers: allocatedNumbers
+        }),
+        req.ip || ""
+      ]
+    );
+
+    if (db.inTransaction()) db.exec("COMMIT");
+  } catch (err) {
+    try { if (db.inTransaction()) db.exec("ROLLBACK"); } catch (_) {}
+    console.error("[SELF-ALLOCATE] Transaction error:", err);
+    return res.status(500).json({ error: "Self-allocation failed: " + err.message });
+  }
+
+  bumpNumbersVer();
+  clearApiReadCache();
+  if (app.broadcastSseAll) {
+    try {
+      app.broadcastSseAll("allocation_update", {
+        action: "self_allocate",
+        count: qty,
+        role: "agent",
+        agent_id: agentId,
+        timestamp: Date.now()
+      });
+    } catch (_) {}
+  }
+
+  return res.json({
+    ok: true,
+    allocated: qty,
+    range: range.name,
+    billing_period: period,
+    payterm: payterm,
+    effective_rate: effectiveRate,
+    numbers: allocatedNumbers
+  });
+});
+
 app.post('/api/numbers/unallocate', authRequired, (req, res) => {
   const { ids } = req.body || {};
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids[] required' });
@@ -2036,15 +2847,15 @@ app.post('/api/numbers/unallocate', authRequired, (req, res) => {
   if (req.user.role === 'admin') {
     where = `n.id IN (SELECT id FROM tmp_unalloc_ids)`;
     params = [];
-    updateSql = `UPDATE numbers SET manager_id=NULL, agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids)`;
+    updateSql = `UPDATE numbers SET manager_id=NULL, agent_id=NULL, client_id=NULL, manager_rate='', agent_rate='', client_rate='', payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids)`;
   } else if (req.user.role === 'manager') {
     where = `n.id IN (SELECT id FROM tmp_unalloc_ids) AND n.manager_id=?`;
     params = [req.user.id];
-    updateSql = `UPDATE numbers SET agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids) AND manager_id=?`;
+    updateSql = `UPDATE numbers SET agent_id=NULL, client_id=NULL, agent_rate='', client_rate='', payout='0' WHERE id IN (SELECT id FROM tmp_unalloc_ids) AND manager_id=?`;
   } else if (req.user.role === 'agent') {
     where = `n.id IN (SELECT id FROM tmp_unalloc_ids) AND n.agent_id=?`;
     params = [req.user.id];
-    updateSql = `UPDATE numbers SET client_id=NULL, payout='0', rate='' WHERE id IN (SELECT id FROM tmp_unalloc_ids) AND agent_id=?`;
+    updateSql = `UPDATE numbers SET client_id=NULL, client_rate='', payout='0' WHERE id IN (SELECT id FROM tmp_unalloc_ids) AND agent_id=?`;
   } else {
     return res.status(403).json({ error: 'Not allowed' });
   }
@@ -2078,6 +2889,7 @@ app.post('/api/numbers/unallocate', authRequired, (req, res) => {
     } finally { db.endBatch(); }
     logAction(req, 'unallocate_numbers', 'numbers', { count, role: req.user.role });
     bumpNumbersVer();
+    if (app.broadcastSseAll) app.broadcastSseAll('allocation_update', { action: 'unallocate', count, role: req.user.role, timestamp: Date.now() });
     res.json({ ok: true, count });
   } catch (e) {
     try { db.execNoSave('DROP TABLE IF EXISTS tmp_unalloc_ids'); } catch (_) {}
@@ -2088,6 +2900,102 @@ app.post('/api/numbers/unallocate', authRequired, (req, res) => {
 });
 
 function truthy(v) { return v === true || v === 1 || v === '1' || String(v || '').toLowerCase() === 'true' || String(v || '').toLowerCase() === 'yes'; }
+/* P19b: shared stats-decrement for deleted SMS rows (DST-safe, phantom-safe).
+   Rollback note: yeh wahi logic hai jo pehle deleteNumbersFromRows ke andar inline tha.
+   Phantom-safe: VALUES NEGATIVE hain + DO UPDATE '+' — agar koi key stats me exist nahi
+   karti (edge/mismatch), to negative row insert hoti hai aur neeche wali cleanup use hata
+   deti hai — stats KABHI inflate nahi hoti (purana code missing-key par POSITIVE phantom
+   row bana deta tha). */
+/* P19k #5 (CRITICAL): delete-path stats EXACT-RESYNC.
+   Purana decrementSmsDailyStats (deleted rows ko subtract karna) tabhi sahi tha jab
+   sms_daily_stats pehle se bilkul sahi thi. Live DB me purane (pre-P18/P19) deletes ka
+   drift baaqi reh gaya tha — dashboard ab bhi deleted SMS gin raha tha aur decrement
+   drift ko kabhi theek nahi karta tha (sirf aur-minus karta tha).
+   Ab: delete se PEHLE affected keys (stat_date|manager|agent|client|cli) collect hoti
+   hain; sms_records delete hone ke BAAD har affected key ko BAAKI sms_records se
+   AUTHORITATIVELY recompute karke exact value likhi jaati hai:
+     - stale/over-count rows -> sahi ho jati hain (drift heal)
+     - lost/under-count rows -> wapas create hoti hain
+     - zero-remaining keys -> row remove ho jati hai
+   Keying wahi hai jo ingest (recordSmsStats/ukStatDate) use karta hai.
+   Rollback: purana decrement body wapas la dein (statAgg negative VALUES +
+   'sms_count<=0' cleanup) — lekin phir pre-existing drift heal nahi hoga. */
+const STATS_RESYNC_MAX_KEYS = 4000; /* is se zyada keys => inline O(keys) queries bajaye background full rebuild */
+function affectedStatsKeys(whereSql, params = []) {
+  const rows = db.all(`SELECT received_at, COALESCE(manager_id,-1) mgr, COALESCE(agent_id,-1) ag, COALESCE(client_id,-1) cl, COALESCE(cli,'') cli
+    FROM sms_records WHERE COALESCE(is_test,0)=0 AND (${whereSql})`, params);
+  const seen = new Map();
+  for (const r of rows) {
+    const sd = ukStatDate(r.received_at); /* same conversion as recordSmsStats at ingest */
+    const k = sd + '|' + r.mgr + '|' + r.ag + '|' + r.cl + '|' + r.cli;
+    if (!seen.has(k)) seen.set(k, { sd, mgr: r.mgr, ag: r.ag, cl: r.cl, cli: r.cli });
+  }
+  return [...seen.values()];
+}
+/** Har affected key ko remaining sms_records se exact recompute karke likhta hai.
+ *  Return: { keys, corrected, deferred } — deferred=true => caller ko background full
+ *  rebuild schedule karna hai (bohat zyada keys the, inline skip). */
+function resyncStatsKeys(keys) {
+  if (!keys || !keys.length) return { keys: 0, corrected: 0, deferred: false };
+  if (keys.length > STATS_RESYNC_MAX_KEYS) return { keys: keys.length, corrected: 0, deferred: true };
+  let corrected = 0;
+  for (const k of keys) {
+    /* UK-day bucket = [uk-midnight(sd), uk-midnight(sd+1)) — ukStatDate ke exact equivalent,
+       DST-safe (har din apne offset se convert hota hai — ukLocalDateToUtcSql). */
+    const wFrom = ukLocalDateToUtcSql(k.sd, 0);
+    const wTo = ukLocalDateToUtcSql(k.sd, 1);
+    const truth = db.get(`SELECT COUNT(*) c, COALESCE(SUM(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL)),0) p
+      FROM sms_records
+      WHERE COALESCE(is_test,0)=0
+        AND COALESCE(manager_id,-1)=? AND COALESCE(agent_id,-1)=? AND COALESCE(client_id,-1)=?
+        AND COALESCE(cli,'')=? AND received_at >= ? AND received_at < ?`,
+      [k.mgr, k.ag, k.cl, k.cli, wFrom, wTo]);
+    const existing = db.get(`SELECT sms_count, payout_sum FROM sms_daily_stats
+      WHERE stat_date=? AND manager_id=? AND agent_id=? AND client_id=? AND cli=?`,
+      [k.sd, k.mgr, k.ag, k.cl, k.cli]);
+    const wantC = truth ? (truth.c || 0) : 0;
+    const wantP = truth ? (truth.p || 0) : 0;
+    const curC = existing ? existing.sms_count : null;
+    const curP = existing ? existing.payout_sum : null;
+    const same = existing && curC === wantC && Math.abs((curP || 0) - wantP) < 1e-9;
+    if (same) continue;
+    corrected++;
+    if (wantC > 0) {
+      db.runNoSave(`INSERT INTO sms_daily_stats (stat_date,manager_id,agent_id,client_id,cli,sms_count,payout_sum)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(stat_date,manager_id,agent_id,client_id,cli)
+        DO UPDATE SET sms_count = excluded.sms_count, payout_sum = excluded.payout_sum`,
+        [k.sd, k.mgr, k.ag, k.cl, k.cli, wantC, wantP]);
+    } else if (existing) {
+      db.runNoSave(`DELETE FROM sms_daily_stats
+        WHERE stat_date=? AND manager_id=? AND agent_id=? AND client_id=? AND cli=?`,
+        [k.sd, k.mgr, k.ag, k.cl, k.cli]);
+    }
+  }
+  return { keys: keys.length, corrected, deferred: false };
+}
+/** Bohat bade deletes ke liye: poora sms_daily_stats table background me authoritative
+ *  rebuild (existing chunked backfill engine — reset semantics). Request inline nahi rukti. */
+function scheduleStatsFullRebuild(reason = 'delete') {
+  setImmediate(() => {
+    try {
+      if (backfillRunning) return; /* already running — wo hi authoritative rebuild hai */
+      console.log('[STATS-RESYNC] large delete -> background full rebuild (' + reason + ')');
+      db.runNoSave('DELETE FROM sms_daily_stats');
+      setMeta('stats_backfill_max_id', '0');
+      setMeta('stats_backfill_done', '0');
+      backfillSmsStats(null).then(r => {
+        try { logAction({}, 'stats_full_rebuild', 'system', { reason, ...r }); } catch (_) {}
+      }).catch(e => console.error('[STATS-RESYNC] rebuild failed:', e.message));
+    } catch (e) { console.error('[STATS-RESYNC] schedule failed:', e.message); }
+  });
+}
+/** Compat wrapper: delete flows isko call karte hain — keys collect, (caller delete karta
+ *  hai), phir exact resync. Yahan dono ek saath: rows delete hone se PEHLE keys nikaal kar
+ *  return karta hai; resyncStatsKeys caller DELETE ke baad chalata hai. */
+function planSmsStatsResync(whereSql, params = []) { return affectedStatsKeys(whereSql, params); }
+
+
 function deleteNumbersFromRows(rows, req, action, details = {}, deleteSms = false) {
   const cleanRows = (rows || [])
     .map(r => ({ id: parseInt(r.id, 10), number: String(r.number || '') }))
@@ -2096,6 +3004,7 @@ function deleteNumbersFromRows(rows, req, action, details = {}, deleteSms = fals
   if (!count) return { deleted: 0, deleted_sms: 0, preserved_sms: 0, vacuum: false };
 
   let smsCount = 0;
+  let deferredRebuild = false;
   try {
     db.execNoSave('BEGIN TRANSACTION');
     db.execNoSave('DROP TABLE IF EXISTS tmp_delete_numbers');
@@ -2108,9 +3017,22 @@ function deleteNumbersFromRows(rows, req, action, details = {}, deleteSms = fals
       WHERE number_id IN (SELECT id FROM tmp_delete_numbers)
          OR number IN (SELECT number FROM tmp_delete_numbers WHERE number<>'')`)?.c || 0;
     if (deleteSms) {
-      db.runNoSave(`DELETE FROM sms_records
-        WHERE number_id IN (SELECT id FROM tmp_delete_numbers)
-           OR number IN (SELECT number FROM tmp_delete_numbers WHERE number<>'')`);
+      /* P18: pre-aggregated dashboard/stats counters bhi isi transaction mein theek hote hain,
+        taake deleted SMS dashboard totals / stats se foran gayab ho jayen.
+        Sirf non-test rows (wahi stats mein ginti hoti hai). */
+      /* P19k #5 FIX: decrement ki jagah EXACT-RESYNC — delete se pehle affected keys
+        collect, records delete hone ke baad har key ko remaining sms_records se
+        authoritative recompute. Pre-existing drift (purane deletes ka leftover) bhi
+        isi delete par heal ho jata hai — dashboard hamesha remaining records se derive
+        hota hai. Rollback: purana decrementSmsDailyStats + DELETE (P19 comment history). */
+      const delWhere = `number_id IN (SELECT id FROM tmp_delete_numbers)
+           OR number IN (SELECT number FROM tmp_delete_numbers WHERE number<>'')`;
+      const affKeys = planSmsStatsResync(delWhere);
+      db.runNoSave(`DELETE FROM sms_records WHERE ${delWhere}`);
+      let res = { deferred: false };
+      try { res = resyncStatsKeys(affKeys); } catch (e) { console.warn('[DELETE-NUMBERS] stats resync failed:', e.message); }
+      if (res.deferred) { deferredRebuild = true; }
+      /* Note: payment_ledger rows jaan-boojh kar rakhi (historical immutability) — balances Sahi rehte hain */
     }
     db.runNoSave('DELETE FROM numbers WHERE id IN (SELECT id FROM tmp_delete_numbers)');
     db.execNoSave('DROP TABLE IF EXISTS tmp_delete_numbers');
@@ -2120,6 +3042,7 @@ function deleteNumbersFromRows(rows, req, action, details = {}, deleteSms = fals
     try { db.execNoSave('ROLLBACK'); } catch (_) {}
     throw e;
   }
+  if (deferredRebuild) scheduleStatsFullRebuild('numbers-delete');
 
   // Do not VACUUM after every delete; it rewrites the whole DB and makes small delete/range actions feel frozen.
   const vacuum = false;
@@ -2224,17 +3147,21 @@ app.post('/api/numbers/unallocate-by-range', authRequired, (req, res) => {
     FROM numbers n
     WHERE n.range_id=? AND ${scope.where} AND n.${ownerCol} IS NOT NULL
     ORDER BY n.id ASC LIMIT ?`, [rangeId, ...scope.params, qty]);
-  if (!rows.length) return res.status(404).json({ error: 'Allocated numbers were not found' });
+  if (!rows.length) return res.json({ ok: true, count: 0, unallocated: 0, requested: qty, message: 'No numbers currently allocated for this user/range.' });
   const ids = rows.map(r => r.id);
   const ph = ids.map(() => '?').join(',');
 
-  if (req.user.role === 'admin') db.run(`UPDATE numbers SET manager_id=NULL, agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (${ph})`, ids);
-  else if (req.user.role === 'manager') db.run(`UPDATE numbers SET agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (${ph}) AND manager_id=?`, [...ids, req.user.id]);
-  else if (req.user.role === 'agent') db.run(`UPDATE numbers SET client_id=NULL, payout='0', rate='' WHERE id IN (${ph}) AND agent_id=?`, [...ids, req.user.id]);
+  if (req.user.role === 'admin') db.run(`UPDATE numbers SET manager_id=NULL, agent_id=NULL, client_id=NULL, manager_rate='', agent_rate='', client_rate='', payout='0', rate='' WHERE id IN (${ph})`, ids);
+  else if (req.user.role === 'manager') db.run(`UPDATE numbers SET agent_id=NULL, client_id=NULL, agent_rate='', client_rate='', payout='0' WHERE id IN (${ph}) AND manager_id=?`, [...ids, req.user.id]);
+  else if (req.user.role === 'agent') db.run(`UPDATE numbers SET client_id=NULL, client_rate='', payout='0' WHERE id IN (${ph}) AND agent_id=?`, [...ids, req.user.id]);
 
   rows.forEach(nr=>logNumberHistory(req,nr,'unallocated','','','Unallocate range quantity'));
   logAction(req,'unallocate_numbers_by_range','numbers',{rangeId,count:rows.length,role:req.user.role});
-  res.json({ ok:true, count: rows.length });
+  let msg = `Successfully unallocated ${rows.length} numbers.`;
+  if (rows.length < qty) {
+    msg = `Only ${rows.length} numbers were allocated. Requested reduction was ${qty}. Therefore, unallocated all ${rows.length} owned numbers.`;
+  }
+  res.json({ ok: true, count: rows.length, unallocated: rows.length, requested: qty, message: msg });
 });
 
 
@@ -2248,55 +3175,108 @@ function auditJobAction(user, action, module, details={}){
 async function performSmartDivideJob(job){
   const { user, range_ids, target_ids, qty, payterm } = job;
   const wantRole = job.wantRole || { admin: 'manager', manager: 'agent', agent: 'client' }[user.role];
-  const col = { manager: 'manager_id', agent: 'agent_id', client: 'client_id' }[wantRole];
-  let ownerCond = '1=1', ownerParams = [];
-  if (user.role === 'manager') { ownerCond = 'manager_id=?'; ownerParams = [user.id]; }
-  else if (user.role === 'agent') { ownerCond = 'agent_id=?'; ownerParams = [user.id]; }
-  const smartType = normalizePaymentType(payterm || 'weekly');
-  setJob(job,{status:'processing',started_at:new Date().toISOString(),progress:0,processed:0,total:0,message:'Selecting numbers'});
+  const smartType = normalizePaymentCycle(payterm || 'weekly_7_1');
+  setJob(job,{status:'processing',started_at:new Date().toISOString(),progress:0,processed:0,total:0,message:'Allocating unallocated numbers'});
   try{
-    if(wantRole==='agent') target_ids.forEach(tid=>db.runNoSave('UPDATE users SET payment_type=? WHERE id=?',[smartType,tid]));
-    const report=[]; let total=0; let planned=0;
-    // First pass counts selected IDs and keeps pools in memory; avoids DB save per number.
-    const rangePools=[];
-    for(const rid of range_ids){
-      const pool=db.all(`SELECT id FROM numbers WHERE range_id=? AND ${col} IS NULL AND ${ownerCond} LIMIT ?`, [rid, ...ownerParams, qty]).map(r=>r.id);
-      rangePools.push({rid,pool}); planned += pool.length;
+    const report=[]; let total=0;
+    
+    // Strict Database-Level Unallocated condition:
+    // Admin: strictly completely unallocated numbers (no manager, no agent, no client)
+    // Manager: numbers belonging to manager that are NOT allocated downstream (agent_id IS NULL AND client_id IS NULL)
+    // Agent: numbers belonging to agent that are NOT allocated downstream (client_id IS NULL)
+    let unallocCond = '';
+    let baseParams = [];
+    if (user.role === 'admin') {
+      unallocCond = 'manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL';
+      baseParams = [];
+    } else if (user.role === 'manager') {
+      unallocCond = 'manager_id=? AND agent_id IS NULL AND client_id IS NULL';
+      baseParams = [user.id];
+    } else if (user.role === 'agent') {
+      unallocCond = 'agent_id=? AND client_id IS NULL';
+      baseParams = [user.id];
     }
-    setJob(job,{total:planned,message:'Updating allocations'});
-    // Process in chunks without a long transaction so other requests can run between chunks.
-    for(const {rid,pool} of rangePools){
-      const take=pool.length;
-      const perBase=Math.floor(take/target_ids.length); let rem=take%target_ids.length, ptr=0;
-      const split=target_ids.map(t=>{const c=perBase+(rem>0?1:0); if(rem>0)rem--; return {t,c};});
-      for(const sp of split){
-        const ids=pool.slice(ptr, ptr+sp.c); ptr += sp.c;
-        for(const part of chunkIds(ids, 1000)){
-          if(!part.length) continue;
-          const ph=part.map(()=>'?').join(',');
-          if(wantRole==='client'){
-            const agt=db.get('SELECT parent_id FROM users WHERE id=?',[sp.t]);
-            const mgr=agt?db.get('SELECT parent_id FROM users WHERE id=?',[agt.parent_id]):null;
-            db.runNoSave(`UPDATE numbers SET client_id=?, agent_id=?, manager_id=? WHERE id IN (${ph})`, [sp.t, agt?agt.parent_id:null, mgr?mgr.parent_id:null, ...part]);
-          } else if(wantRole==='agent'){
-            const mgr=db.get('SELECT parent_id FROM users WHERE id=?',[sp.t]);
-            const mgrId = user.role === 'admin' ? null : (mgr?mgr.parent_id:null);
-            db.runNoSave(`UPDATE numbers SET agent_id=?, manager_id=?, client_id=NULL, payout='0', rate='', payterm=? WHERE id IN (${ph})`, [sp.t, mgrId, smartType, ...part]);
-          } else {
-            db.runNoSave(`UPDATE numbers SET manager_id=?, agent_id=NULL, client_id=NULL, payout='0', rate='' WHERE id IN (${ph})`, [sp.t, ...part]);
+
+    for (const rid of range_ids) {
+      let pool = [];
+      let take = 0;
+      let split = [];
+
+      try {
+        if (!db.inTransaction()) db.exec('BEGIN IMMEDIATE');
+
+        // Select ONLY genuinely unallocated numbers inside immediate transaction lock
+        pool = db.all(
+          `SELECT id FROM numbers WHERE range_id=? AND ${unallocCond} ORDER BY id ASC LIMIT ?`,
+          [rid, ...baseParams, qty]
+        ).map(r => r.id);
+
+        take = pool.length;
+        if (take > 0) {
+          const perBase = Math.floor(take / target_ids.length);
+          let rem = take % target_ids.length;
+          split = target_ids.map(t => {
+            const c = perBase + (rem > 0 ? 1 : 0);
+            if (rem > 0) rem--;
+            return { t, c };
+          });
+
+          let ptr = 0;
+          for (const sp of split) {
+            const ids = pool.slice(ptr, ptr + sp.c);
+            ptr += sp.c;
+            for (const part of chunkIds(ids, 1000)) {
+              if (!part.length) continue;
+              const ph = part.map(() => '?').join(',');
+              if (wantRole === 'client') {
+                const clientRateVal = job.rate || '0';
+                if (user.role === 'admin') {
+                  db.runNoSave(`UPDATE numbers SET client_id=?, agent_id=NULL, manager_id=NULL, manager_rate='', agent_rate='', client_rate=?, payout=?, rate=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, clientRateVal, clientRateVal, clientRateVal, ...part]);
+                } else if (user.role === 'manager') {
+                  db.runNoSave(`UPDATE numbers SET client_id=?, agent_id=NULL, manager_id=?, agent_rate='', client_rate=?, payout=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, user.id, clientRateVal, clientRateVal, ...part]);
+                } else {
+                  const agtMgrId = user.id ? agentManagerId(user.id) : null;
+                  db.runNoSave(`UPDATE numbers SET client_id=?, agent_id=?, manager_id=COALESCE(manager_id, ?), client_rate=?, payout=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, user.id, agtMgrId, clientRateVal, clientRateVal, ...part]);
+                }
+              } else if (wantRole === 'agent') {
+                const agentRateVal = job.rate || '';
+                if (user.role === 'admin') {
+                  const agentMgr = getAgentManager(sp.t);
+                  if (agentMgr) {
+                    // Scenario B: Manager Agent — follow Admin -> Manager -> Agent hierarchy
+                    db.runNoSave(`UPDATE numbers SET agent_id=?, manager_id=?, client_id=NULL, agent_rate=?, client_rate='', payout='0', payterm=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, agentMgr.id, agentRateVal, smartType, ...part]);
+                  } else {
+                    // Scenario A: Direct Admin Agent — no manager in chain
+                    db.runNoSave(`UPDATE numbers SET agent_id=?, manager_id=NULL, client_id=NULL, manager_rate='', agent_rate=?, client_rate='', payout='0', rate=?, payterm=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, agentRateVal, agentRateVal, smartType, ...part]);
+                  }
+                } else {
+                  db.runNoSave(`UPDATE numbers SET agent_id=?, manager_id=?, client_id=NULL, agent_rate=?, client_rate='', payout='0', payterm=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, user.id, agentRateVal, smartType, ...part]);
+                }
+              } else {
+                // Admin -> Manager
+                const mgrRateVal = job.rate || '';
+                db.runNoSave(`UPDATE numbers SET manager_id=?, agent_id=NULL, client_id=NULL, manager_rate=?, agent_rate='', client_rate='', payout='0', rate=?, alloc_source='manual' WHERE id IN (${ph})`, [sp.t, mgrRateVal, mgrRateVal, ...part]);
+              }
+              total += part.length;
+            }
           }
-          total += part.length;
-          setJob(job,{processed:total,progress:planned?Math.floor(total/planned*100):100});
-          await sleepImmediate();
         }
+        if (db.inTransaction()) db.exec('COMMIT');
+      } catch (err) {
+        if (db.inTransaction()) db.exec('ROLLBACK');
+        throw err;
       }
-      const rname=db.get('SELECT name FROM ranges WHERE id=?',[rid]);
-      report.push({range:rname?rname.name:rid,taken:take,split});
+
+      const rname = db.get('SELECT name FROM ranges WHERE id=?', [rid]);
+      report.push({ range: rname ? rname.name : rid, taken: take, split });
+      setJob(job, { processed: total, total });
+      await sleepImmediate();
     }
     db.save(); clearApiReadCache();
-    auditJobAction(user,'smart_divide_numbers_background','numbers',{total,report,payterm:smartType});
+    auditJobAction(user,'smart_divide_numbers_background','numbers',{total,report,payterm:smartType,...(job.rate?{rate_override:job.rate}:{})});
     setJob(job,{status:'done',progress:100,total,processed:total,report,completed_at:new Date().toISOString(),message:'Completed'});
     bumpNumbersVer();
+    if (app.broadcastSseAll) app.broadcastSseAll('allocation_update', { action: 'smart_divide', count: total, timestamp: Date.now() });
   }catch(e){
     setJob(job,{status:'failed',error:e.message||String(e),completed_at:new Date().toISOString(),message:'Failed'});
   }
@@ -2304,9 +3284,11 @@ async function performSmartDivideJob(job){
 function validateSmartDivideTargets(user,wantRole,target_ids){
   for (const tid of target_ids) {
     const t = db.get('SELECT * FROM users WHERE id=?', [tid]);
-    if (!t || t.role !== wantRole || (user.role !== 'admin' && t.parent_id !== user.id)) return false;
-    if (user.role==='admin' && wantRole==='manager') continue;
-    if (user.role==='admin' && wantRole==='agent') continue;
+    if (!t || t.role !== wantRole) return false;
+    if (user.role !== 'admin') {
+      const allowed = scopeIds(user);
+      if (!allowed.includes(tid)) return false;
+    }
   }
   return true;
 }
@@ -2329,14 +3311,20 @@ app.post('/api/numbers/smart-divide', authRequired, async (req, res) => {
   let wantRole = { manager: 'agent', agent: 'client' }[req.user.role];
   if (req.user.role === 'admin') {
     const roles=[...new Set(cleanTargetIds.map(id=>db.get('SELECT role FROM users WHERE id=?',[id])?.role).filter(Boolean))];
-    if(roles.length!==1 || !['manager','agent'].includes(roles[0])) return res.status(403).json({ error: 'Admin target must be all Managers or all Agents' });
+    if(roles.length!==1 || !['manager','agent','client'].includes(roles[0])) return res.status(403).json({ error: 'Admin target must be all Managers, all Agents, or all Clients' });
+    wantRole=roles[0];
+  } else if (req.user.role === 'manager') {
+    const roles=[...new Set(cleanTargetIds.map(id=>db.get('SELECT role FROM users WHERE id=?',[id])?.role).filter(Boolean))];
+    if(roles.length!==1 || !['agent','client'].includes(roles[0])) return res.status(403).json({ error: 'Manager target must be all Agents or all Clients' });
     wantRole=roles[0];
   }
   if(!wantRole) return res.status(403).json({error:'Not allowed'});
   if(!validateSmartDivideTargets(req.user,wantRole,cleanTargetIds)) return res.status(403).json({ error: 'Invalid target(s)' });
+  const sdRateCheck = validatedAllocationRate(req.user, req.body ? req.body.rate : undefined, wantRole);
+  if (!sdRateCheck.ok) return res.status(400).json({ error: sdRateCheck.error });
   const estimated=cleanRangeIds.length*cleanQty;
   const shouldBackground = background !== false && estimated >= 1000;
-  const job={job_id:makeNumberJobId(),type:'smart_divide',status:'queued',progress:0,processed:0,total:estimated,user:{id:req.user.id,username:req.user.username,role:req.user.role},wantRole,range_ids:cleanRangeIds,target_ids:cleanTargetIds,qty:cleanQty,payterm:normalizePaymentCycle(payterm||'weekly_7_1'),created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+  const job={job_id:makeNumberJobId(),type:'smart_divide',status:'queued',progress:0,processed:0,total:estimated,user:{id:req.user.id,username:req.user.username,role:req.user.role},wantRole,range_ids:cleanRangeIds,target_ids:cleanTargetIds,qty:cleanQty,payterm:normalizePaymentCycle(payterm||'weekly_7_1'),rate:sdRateCheck.value,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
   numberJobs.set(job.job_id, job);
   setImmediate(()=>performSmartDivideJob(job));
   if(shouldBackground){
@@ -2346,7 +3334,13 @@ app.post('/api/numbers/smart-divide', authRequired, async (req, res) => {
   // Small jobs: wait for completion but still yield internally so event loop stays responsive.
   while(['queued','processing'].includes(job.status)) await new Promise(r=>setTimeout(r,50));
   if(job.status==='failed') return res.status(500).json({ok:false,error:job.error||'Job failed',job_id:job.job_id});
-  res.json({ok:true,total:job.total||0,report:job.report||[],job_id:job.job_id});
+  const requested = cleanRangeIds.length * cleanQty;
+  const allocated = job.total || 0;
+  let allocMsg = `Successfully allocated ${allocated} numbers.`;
+  if (allocated < requested) {
+    allocMsg = `Only ${allocated} numbers were available out of ${requested} requested. Therefore, only ${allocated} numbers were allocated.`;
+  }
+  res.json({ok:true,total:allocated,allocated,requested,message:allocMsg,report:job.report||[],job_id:job.job_id});
 });
 
 
@@ -2361,6 +3355,48 @@ function buildSmsPagedQuery(user, q = {}) {
   if (q.range_id) { where.push('s.range_id=?'); params.push(+q.range_id); }
   if (q.number) { where.push('s.number=?'); params.push(String(q.number)); }
   if (q.cli) { where.push('s.cli=?'); params.push(String(q.cli)); }
+  /* P20 (CDR rebuild): free-text SEARCH NUMBER / SEARCH CLI (reference panel jaisa).
+     Contains-match, case-insensitive (case_sensitive_like=ON hai, is liye dono
+     taraf lowercase). Exact q.number/q.cli barkarar — dusre callers untouched. */
+  if (q.number_like) { const v = '%' + String(q.number_like).trim().toLowerCase() + '%'; where.push('LOWER(s.number) LIKE ?'); params.push(v); }
+  if (q.cli_like) { const v = '%' + String(q.cli_like).trim().toLowerCase() + '%'; where.push('LOWER(s.cli) LIKE ?'); params.push(v); }
+  /* P14: Provider = ranges.provider (real existing relationship). Admin-only UI exposure. */
+  /* P19k #3: ab BACKEND bhi enforce karta hai — Manager/Agent/Client se aaya provider
+     param silently ignore hota hai (sirf UI hide karna kaafi nahi). Client scope to
+     smsScopeWhere pehle hi laagu hai; ye provider dimension ko admin-only rakhta hai. */
+  if (q.provider && user && user.role === 'admin') { where.push("COALESCE(r.provider,'')=?"); params.push(String(q.provider)); }
+  /* P14: Time-of-day window in UK wall-clock, applied per day of the from..to range
+     (DST-safe: each day converts with its own UK offset). Default day = UK today. */
+  if (q.tfrom || q.tto) {
+    const HM = (v) => /^\d{1,2}:\d{2}$/.test(String(v||'').trim()) ? String(v).trim() : '';
+    const tf = HM(q.tfrom), tt = HM(q.tto);
+    if (tf || tt) {
+      let d0 = /^\d{4}-\d{2}-\d{2}$/.test(String(q.from||'')) ? String(q.from) : ukTodayDateStr(0);
+      let d1 = /^\d{4}-\d{2}-\d{2}$/.test(String(q.to||'')) ? String(q.to) : d0;
+      if (d0 > d1) { const _x = d0; d0 = d1; d1 = _x; }
+      const dayMs = 86400000;
+      const n0 = Date.UTC(+d0.slice(0,4), +d0.slice(5,7)-1, +d0.slice(8,10));
+      const n1 = Date.UTC(+d1.slice(0,4), +d1.slice(5,7)-1, +d1.slice(8,10));
+      const days = Math.min(40, Math.max(0, Math.round((n1-n0)/dayMs)));
+      const windows = [];
+      const wparams = [];
+      for (let i = 0; i <= days; i++) {
+        const dt = new Date(n0 + i*dayMs);
+        const ds = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,'0')}-${String(dt.getUTCDate()).padStart(2,'0')}`;
+        const a = tf ? ukLocalDateTimeToUtcSql(ds, tf) : '';
+        const b = tt ? ukLocalDateTimeToUtcSql(ds, tt) : '';
+        if (a && b && a <= b) { windows.push('(s.received_at >= ? AND s.received_at <= ?)'); wparams.push(a, b); }
+        else if (a && b && a > b) { /* overnight window e.g. 22:00-06:00: [00:00..b] OR [a..23:59] */
+          const eod = ukLocalDateTimeToUtcSql(ds, '23:59');
+          const bod = ukLocalDateTimeToUtcSql(ds, '00:00');
+          windows.push('((s.received_at >= ? AND s.received_at <= ?) OR (s.received_at >= ? AND s.received_at <= ?))');
+          wparams.push(bod, b, a, eod);
+        } else if (a) { const eod = ukLocalDateTimeToUtcSql(ds, '23:59'); windows.push('(s.received_at >= ? AND s.received_at <= ?)'); wparams.push(a, eod); }
+        else if (b) { const bod = ukLocalDateTimeToUtcSql(ds, '00:00'); windows.push('(s.received_at >= ? AND s.received_at <= ?)'); wparams.push(bod, b); }
+      }
+      if (windows.length) { where.push('(' + windows.join(' OR ') + ')'); params.push(...wparams); }
+    }
+  }
   if (q.manager) { where.push('mu.username=?'); params.push(String(q.manager)); }
   if (q.agent) { where.push('au.username=?'); params.push(String(q.agent)); }
   if (q.client) { where.push('cu.username=?'); params.push(String(q.client)); }
@@ -2391,19 +3427,66 @@ function buildSmsPagedQuery(user, q = {}) {
     WHERE ${where.join(' AND ')}`;
   return { baseSql, params };
 }
+/* P11: streaming big-page route (must stay registered ABOVE the cached small-page route). */
+/* P17: 3-state column sort — server-side, full filtered set, stable id tiebreaker.
+   Default (no sort param) = time-based report order (received_at DESC) — UNCHANGED. */
+function smsPagedOrderSql(q){
+  const D = String(q.dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const k = String(q.sort || 'date');
+  if (k === 'payout') return `CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL) ${D}, s.id DESC`;
+  if (k === 'number') return `(CASE WHEN TRIM(COALESCE(s.number,'')) GLOB '[0-9]*' THEN 0 ELSE 1 END) ${D}, CAST(COALESCE(NULLIF(s.number,''),'0') AS REAL) ${D}, COALESCE(s.number,'') ${D}, s.id DESC`;
+  if (k === 'cli') return `(CASE WHEN TRIM(COALESCE(s.cli,'')) GLOB '[0-9]*' THEN 0 ELSE 1 END) ${D}, (CASE WHEN TRIM(COALESCE(s.cli,'')) GLOB '[0-9]*' THEN CAST(TRIM(COALESCE(s.cli,'0')) AS REAL) ELSE 0 END) ${D}, COALESCE(s.cli,'') COLLATE NOCASE ${D}, s.id DESC`;
+  if (k === 'range') return `COALESCE(r.name,'') COLLATE NOCASE ${D}, s.id DESC`;
+  if (k === 'manager') return `COALESCE(mu.username,'') COLLATE NOCASE ${D}, s.id DESC`;
+  if (k === 'agent') return `COALESCE(au.username,'') COLLATE NOCASE ${D}, s.id DESC`;
+  if (k === 'client') return `COALESCE(cu.username,'') COLLATE NOCASE ${D}, s.id DESC`;
+  return `s.received_at ${D}, s.id DESC`;
+}
+app.get('/api/sms/paged', authRequired, (req, res, next) => {
+  const q = req.query || {};
+  const limitRaw0 = String(q.limit || '25');
+  const isAllReq = limitRaw0.toLowerCase() === 'all';
+  const numericReq = parseInt(limitRaw0, 10) || 0;
+  const smsRoleCap = rolePageMax(req.user.role);
+  const bigLimit = isAllReq ? (ROLE_ALL_MAX[req.user.role] || smsRoleCap)
+                 : (numericReq > STREAM_JSON_MAX_ROWS ? Math.min(numericReq, smsRoleCap) : 0);
+  if (!bigLimit) return next();
+  try {
+    const built = buildSmsPagedQuery(req.user, q);
+    /* one combined scan for COUNT + totalPayment (was two identical scans per page) */
+    const agg = db.get(`SELECT COUNT(*) c, COALESCE(SUM(CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL)),0) p ${built.baseSql}`, built.params) || {};
+    const total = +(agg.c || 0);
+    const totalPayment = normalizeDecimalString(agg.p || '0') || '0';
+    const limit = isAllReq ? Math.min(bigLimit, Math.max(1, total || 1)) : bigLimit;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const page = Math.min(Math.max(1, parseInt(q.page || '1', 10) || 1), totalPages);
+    const offset = (page - 1) * limit;
+    const orderSql = smsPagedOrderSql(q);
+    sendPagedStreaming(res,
+      { total, page, limit, totalPages, totalPayment },
+      `SELECT s.*, r.name AS range_name, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45,
+          n.rate AS number_rate, n.payout AS number_payout, n.payterm AS payterm, r.payment_type AS payment_type,
+          r.currency AS range_currency, r.provider AS range_provider,
+          cu.username AS client_name, COALESCE(su.panel_name, au.username) AS agent_name, au.username AS agent_username, su.panel_name AS sharing_panel_name, su.id AS sharing_user_id, mu.username AS manager_name
+        ${built.baseSql}
+        ORDER BY ${orderSql} LIMIT ? OFFSET ?`,
+      [...built.params, limit, offset], (row) => attachSmsPayoutFields([row])[0]);
+  } catch (e) { console.warn('sms stream failed', e.message); if (res.headersSent) { try { res.end(); } catch (_) {} } else res.status(500).json({ error: 'Query failed' }); }
+});
+
 app.get('/api/sms/paged', authRequired, (req, res) => cachedJson(req, res, 1200, () => {
   const q = req.query || {};
   const built = buildSmsPagedQuery(req.user, q);
   const total = +(db.get(`SELECT COUNT(*) c ${built.baseSql}`, built.params)?.c || 0);
   const totalPayment = normalizeDecimalString(db.get(`SELECT COALESCE(SUM(CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL)),0) p ${built.baseSql}`, built.params)?.p || '0') || '0';
   const limitRaw = String(q.limit || '25');
-  const limit = limitRaw.toLowerCase() === 'all' ? Math.max(1, Math.min(total || 1, 10000)) : Math.max(1, Math.min(parseInt(limitRaw || '25', 10) || 25, 1000));
+  /* P11: role-based ceiling (was: numeric<=1000, all<=10000 for every role) */
+  const smsRoleCap = rolePageMax(req.user.role);
+  const limit = limitRaw.toLowerCase() === 'all' ? Math.max(1, Math.min(total || 1, ROLE_ALL_MAX[req.user.role] || smsRoleCap)) : Math.max(1, Math.min(parseInt(limitRaw || '25', 10) || 25, smsRoleCap));
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const page = Math.min(Math.max(1, parseInt(q.page || '1', 10) || 1), totalPages);
   const offset = (page - 1) * limit;
-  const sortMap = { date:'s.received_at', number:'s.number', cli:'s.cli', range:'r.name', manager:'mu.username', agent:'au.username', client:'cu.username', payout:'CAST(COALESCE(NULLIF(s.payout_amount,\'\'),\'0\') AS REAL)' };
-  const sortCol = sortMap[q.sort] || 's.received_at';
-  const dir = String(q.dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const orderSql = smsPagedOrderSql(q);
   // PHASE-2: additive keyset mode — pass &cursor=<lastRowId> to walk deep SMS
   // history in constant time (OFFSET on 10M+ rows is O(offset); cursor is O(1)
   // per page). Without cursor, behaviour is unchanged (page/offset as before).
@@ -2411,6 +3494,7 @@ app.get('/api/sms/paged', authRequired, (req, res) => cachedJson(req, res, 1200,
   if (Number.isFinite(cursor) && cursor > 0) {
     const cRows = db.all(`SELECT s.*, r.name AS range_name, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45,
         n.rate AS number_rate, n.payout AS number_payout, n.payterm AS payterm, r.payment_type AS payment_type,
+        r.currency AS range_currency, r.provider AS range_provider,
         cu.username AS client_name, COALESCE(su.panel_name, au.username) AS agent_name, au.username AS agent_username, su.panel_name AS sharing_panel_name, su.id AS sharing_user_id, mu.username AS manager_name
       ${built.baseSql} AND s.id < ?
       ORDER BY s.id DESC LIMIT ?`, [...built.params, cursor, limit]);
@@ -2419,11 +3503,12 @@ app.get('/api/sms/paged', authRequired, (req, res) => cachedJson(req, res, 1200,
   }
   const rows = db.all(`SELECT s.*, r.name AS range_name, r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45,
       n.rate AS number_rate, n.payout AS number_payout, n.payterm AS payterm, r.payment_type AS payment_type,
+      r.currency AS range_currency, r.provider AS range_provider,
       cu.username AS client_name, COALESCE(su.panel_name, au.username) AS agent_name, au.username AS agent_username, su.panel_name AS sharing_panel_name, su.id AS sharing_user_id, mu.username AS manager_name
     ${built.baseSql}
-    ORDER BY ${sortCol} ${dir}, s.id DESC LIMIT ? OFFSET ?`, [...built.params, limit, offset]);
+    ORDER BY ${orderSql} LIMIT ? OFFSET ?`, [...built.params, limit, offset]);
   return { rows: attachSmsPayoutFields(rows), total, page, limit, totalPages, totalPayment };
-}));
+}, 'numbers_ver')); /* P19: number-delete report cache turant invalidate */
 app.get('/api/stats-summary/:by', authRequired, (req, res) => cachedJson(req, res, 1500, () => {
   const by = req.params.by;
   const built = buildSmsPagedQuery(req.user, req.query || {});
@@ -2433,26 +3518,186 @@ app.get('/api/stats-summary/:by', authRequired, (req, res) => cachedJson(req, re
     manager: { expr:'mu.username', label:'manager_name' },
     range: { expr:'r.name', label:'range_name' },
     number: { expr:'s.number', label:'number' },
-    cli: { expr:'s.cli', label:'cli' }
+    cli: { expr:'s.cli', label:'cli' },
+    /* P19: Provider dimension — SMS Detail Report ke provider facet ke liye (admin UI).
+       Same scoping/filters baaki sab dims jaisi (buildSmsPagedQuery). */
+    provider: { expr:"COALESCE(r.provider,'')", label:'provider' }
   };
   const g = groupMap[by];
   if (!g) { res.status(400); return { error: 'Invalid stats dimension' }; }
   const extra = ['client','agent','manager'].includes(by) ? ` AND ${g.expr} IS NOT NULL AND ${g.expr}<>''` : '';
+  /* P17: optional 3-state sort (sms | payment | key). Default order UNCHANGED (sms DESC, key ASC). */
+  const sK = String(req.query.sort || '').toLowerCase();
+  const sD = String(req.query.dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const sumOrderSql = sK === 'sms' ? `sms ${sD}, key ASC` : sK === 'payment' ? `CAST(payment AS REAL) ${sD}, key ASC` : sK === 'key' ? `key COLLATE NOCASE ${sD}` : '';
   const rows = db.all(`SELECT ${g.expr} AS key, COUNT(*) AS sms,
       COALESCE(SUM(CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL)),0) AS payment
     ${built.baseSql}${extra}
     GROUP BY ${g.expr}
-    HAVING key IS NOT NULL AND key<>''
-    ORDER BY sms DESC, key ASC`, built.params).map(r => ({...r, payment: normalizeDecimalString(r.payment)||'0'}));
+    HAVING key IS NOT NULL AND key<>''${sumOrderSql ? `\n    ORDER BY ${sumOrderSql}` : '\n    ORDER BY sms DESC, key ASC'}`, built.params).map(r => ({...r, payment: normalizeDecimalString(r.payment)||'0'}));
   const totalSms = rows.reduce((a,r)=>a+(+r.sms||0),0);
   const totalPayment = rows.reduce((a,r)=>decimalAdd(a,r.payment||'0'),'0');
   return { rows, totalSms, totalPayment, by };
+}, 'numbers_ver'));
+
+/* ================= P20 (CDR REBUILD): grouped CDR report endpoint =================
+   Reference-panel jaisa SMS Detailed Report: multi-dimension GROUP BY (Hour/Day/
+   Month/Range/Number/CLI/Client/Agent/Manager/Currency/Provider) + SMS count +
+   MY PAYOUT + CLIENT PAYOUT + totals + server-side pagination.
+   - FILTERS: buildSmsPagedQuery REUSE — saare existing filters (date/time window,
+     CLI, number, range, manager, agent, client, provider[admin], message search,
+     number_like/cli_like) AND-combine hote hain + role scope — koi dusra
+     permission system NAHI (spec: reuse existing authorization).
+   - ROLE-GROUP GUARD: jitne dims role ko allowed NAHI (provider/manager sirf
+     admin; agent sirf admin+manager; client sirf admin+manager+agent) wo
+     SILENTLY DROP hote hain — provider-param pattern jaisa (UI hide kaafi nahi).
+   - UK TIME BUCKETS: received_at UTC me hai; Hour/Day/Month buckets Europe/
+     London wall-clock ke hisab se (DST-safe — offset transition segments).
+   - MY PAYOUT = sms_records.payout_amount (authoritative stored value — rate-
+     limit zeroing waghera isi me hai). CLIENT PAYOUT = numbers.payout (client-
+     side rate jo agent->client allocation par set hoti hai; P19d: empty => '0')
+     har us SMS par jisme client_id set hai (client-allocated rows). */
+function ukLastSundayUtcMs(year, monthIdx){ /* monthIdx: 2=March, 9=October */
+  const d = new Date(Date.UTC(year, monthIdx + 1, 0));          // month ka aakhri din
+  d.setUTCDate(d.getUTCDate() - d.getUTCDay());                 // pichhla Sunday
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 1, 0, 0); // 01:00 UTC transition
+}
+/* [startMs, endMs] ko same-offset UTC segments me todena. UK offset saal me
+   sirf 2 baar badalta hai (last Sunday March 01:00 UTC -> +1, last Sunday Oct
+   01:00 UTC -> +0), is liye segments normally 1 (kabhi 2-3) hote hain. */
+function ukOffsetSegments(startMs, endMs){
+  if (!(endMs > startMs)) endMs = startMs + 86400000;
+  const y0 = new Date(startMs).getUTCFullYear() - 1;
+  const y1 = new Date(endMs).getUTCFullYear() + 1;
+  const trans = [];
+  for (let y = y0; y <= y1 && y - y0 < 12; y++) { trans.push(ukLastSundayUtcMs(y, 2)); trans.push(ukLastSundayUtcMs(y, 9)); }
+  trans.sort((a, b) => a - b);
+  const bounds = [startMs, ...trans.filter(t => t > startMs && t < endMs), endMs];
+  const segs = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const off = ukOffsetMinutes(new Date(Math.floor((bounds[i] + bounds[i + 1]) / 2))) / 60;
+    const last = segs[segs.length - 1];
+    if (last && last.off === off) last.end = bounds[i + 1];
+    else segs.push({ start: bounds[i], end: bounds[i + 1], off });
+  }
+  return segs;
+}
+const REPORT_GROUP_DIMS = {
+  hour:    { time: 1, fmt: '%Y-%m-%d %H:00', label: 'Hour' },
+  day:     { time: 1, fmt: '%Y-%m-%d',       label: 'Day' },
+  month:   { time: 1, fmt: '%Y-%m',          label: 'Month' },
+  range:   { expr: "COALESCE(r.name,'')",     label: 'Range' },
+  number:  { expr: "COALESCE(s.number,'')",   label: 'Number' },
+  cli:     { expr: "COALESCE(s.cli,'')",      label: 'CLI' },
+  client:  { roles: ['admin','manager','agent'], expr: "COALESCE(cu.username,'')", label: 'Client' },
+  agent:   { roles: ['admin','manager'],      expr: "COALESCE(au.username,'')", label: 'Agent' },
+  manager: { roles: ['admin'],                expr: "COALESCE(mu.username,'')", label: 'Manager' },
+  currency:{ expr: "COALESCE(r.currency,'')", label: 'Currency' },
+  provider:{ roles: ['admin'],                expr: "COALESCE(r.provider,'')",  label: 'Provider' },
+};
+app.get('/api/sms/report', authRequired, (req, res) => cachedJson(req, res, 1200, () => {
+  const q = req.query || {};
+  const role = req.user && req.user.role;
+  /* role-allowed dims — disallowed silently dropped (backend-enforced scope) */
+  const want = String(q.group || '').split(',').map(s => s.trim()).filter(Boolean);
+  const dims = [];
+  for (const d of want) {
+    const D = REPORT_GROUP_DIMS[d];
+    if (D && !dims.includes(d) && (!D.roles || D.roles.includes(role))) dims.push(d);
+  }
+  if (!dims.length) { res.status(400); return { error: 'group param required (hour,day,month,range,number,cli,client,agent,manager,currency,provider)' }; }
+  const built = buildSmsPagedQuery(req.user, q);
+  /* UTC span for time-bucket segments: q.from/q.to (UK dates) ya data ka min/max */
+  let spanA, spanB;
+  const okDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+  if (okDate(q.from) || okDate(q.to)) {
+    const d0 = okDate(q.from) ? String(q.from) : (okDate(q.to) ? String(q.to) : ukTodayDateStr(0));
+    const d1 = okDate(q.to) ? String(q.to) : d0;
+    const [a0, b0] = d0 <= d1 ? [d0, d1] : [d1, d0];
+    const aSql = ukLocalDateToUtcSql(a0, 0), bSql = ukLocalDateToUtcSql(b0, 1);
+    spanA = Date.parse(aSql.replace(' ', 'T') + 'Z'); spanB = Date.parse(bSql.replace(' ', 'T') + 'Z');
+  } else {
+    const mm = db.get(`SELECT MIN(s.received_at) a, MAX(s.received_at) b ${built.baseSql}`, built.params) || {};
+    const p = x => x ? Date.parse(String(x).replace(' ', 'T') + 'Z') : NaN;
+    spanA = p(mm.a); spanB = p(mm.b);
+  }
+  if (!Number.isFinite(spanA) || !Number.isFinite(spanB)) { spanA = Date.now() - 86400000; spanB = Date.now(); }
+  if (spanB < spanA) { const x = spanA; spanA = spanB; spanB = x; }
+  spanB += 3600000; /* max received_at wale din ka poora bucket cover */
+  const segs = ukOffsetSegments(spanA, spanB);
+  const timeExpr = fmt => segs.length === 1
+    ? `strftime('${fmt}', s.received_at, '${segs[0].off >= 0 ? '+' : ''}${segs[0].off} hours')`
+    : 'CASE ' + segs.map(sg => `WHEN s.received_at >= '${fmtUtcSql(sg.start)}' AND s.received_at < '${fmtUtcSql(sg.end)}' THEN strftime('${fmt}', s.received_at, '${sg.off >= 0 ? '+' : ''}${sg.off} hours')`).join(' ')
+      + ` ELSE strftime('${fmt}', s.received_at, '${segs[segs.length - 1].off >= 0 ? '+' : ''}${segs[segs.length - 1].off} hours') END`;
+  const kExpr = dims.map(d => REPORT_GROUP_DIMS[d].time ? timeExpr(REPORT_GROUP_DIMS[d].fmt) : REPORT_GROUP_DIMS[d].expr);
+  const payoutSum = "COALESCE(SUM(CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL)),0)";
+  const clientPayoutSum = "COALESCE(SUM(CASE WHEN COALESCE(s.client_id,0)>0 THEN CAST(COALESCE(NULLIF(n.payout,''),'0') AS REAL) ELSE 0 END),0)";
+  const inner = `SELECT ${kExpr.map((e, i) => `${e} AS k${i}`).join(', ')}, COUNT(*) AS sms, ${payoutSum} AS my_payout, ${clientPayoutSum} AS client_payout ${built.baseSql} GROUP BY ${kExpr.join(', ')}`;
+  const total = +(db.get(`SELECT COUNT(*) c FROM (${inner})`, built.params)?.c || 0);
+  const grand = db.get(`SELECT COUNT(*) sms, ${payoutSum} my_payout, ${clientPayoutSum} client_payout ${built.baseSql}`, built.params) || {};
+  const limitRaw = String(q.limit || '25');
+  const smsRoleCap = rolePageMax(role);
+  const limit = limitRaw.toLowerCase() === 'all' ? Math.max(1, Math.min(Math.max(1, total), ROLE_ALL_MAX[role] || smsRoleCap))
+                 : Math.max(1, Math.min(parseInt(limitRaw || '25', 10) || 25, smsRoleCap));
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const page = Math.min(Math.max(1, parseInt(q.page || '1', 10) || 1), totalPages);
+  const offset = (page - 1) * limit;
+  /* order: default pehla dim ASC (khali aakhir me), phir SMS DESC. sort=sms|payout|client_payout override */
+  const sK = String(q.sort || '').toLowerCase();
+  const sD = String(q.dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  let orderSql;
+  if (sK === 'sms' || sK === 'payout' || sK === 'client_payout') {
+    const col = sK === 'sms' ? 'sms' : (sK === 'payout' ? 'my_payout' : 'client_payout');
+    orderSql = `${col} ${sD}, k0 COLLATE NOCASE ASC`;
+  } else {
+    orderSql = kExpr.map((e, i) => `(CASE WHEN ${e}='' OR ${e} IS NULL THEN 1 ELSE 0 END) ASC, k${i} COLLATE NOCASE ASC`).join(', ') + ', sms DESC';
+  }
+  const rows = db.all(`${inner} ORDER BY ${orderSql} LIMIT ? OFFSET ?`, [...built.params, limit, offset]);
+  return {
+    ok: true, group: dims,
+    rows: rows.map(r => ({ dims: dims.reduce((o, d, i) => (o[d] = r['k' + i], o), {}), sms: +r.sms || 0,
+      my_payout: normalizeDecimalString(r.my_payout) || '0', client_payout: normalizeDecimalString(r.client_payout) || '0' })),
+    total, page, limit, totalPages,
+    totals: { sms: +(grand.sms || 0), my_payout: normalizeDecimalString(grand.my_payout) || '0', client_payout: normalizeDecimalString(grand.client_payout) || '0' },
+  };
 }));
+
 // Legacy bulk endpoint kept for the summary widgets. Capped (see
 // smsRowsForScope) and cached, because panels re-call it on every page click.
 app.get('/api/sms', authRequired, (req, res) => cachedJson(req, res, 2500, () => {
   return smsRowsForScope(req.user);
 }));
+
+/* P14: distinct CLI (C-Level) list for report filters — role-scoped, cheap, cached */
+app.get('/api/sms/clis', authRequired, (req, res) => cachedJson(req, res, 30000, () => {
+  /* P17: CLI list = EXACT current report dataset (buildSmsPagedQuery = wahi scope + saare report filters
+     jo /api/sms/paged use karta hai). Default = UK aaj. Har CLI ka count bhi (drill-style summary). */
+  const q = { ...(req.query || {}) };
+  const dq = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+  if (!dq(q.from)) delete q.from;
+  if (!dq(q.to)) delete q.to;
+  if (!q.from && !q.to) { q.from = ukTodayDateStr(0); q.to = q.from; }
+  else if (q.from && !q.to) q.to = q.from;
+  else if (!q.from && q.to) q.from = q.to;
+  if (q.from > q.to) { const t = q.from; q.from = q.to; q.to = t; }
+  const built = buildSmsPagedQuery(req.user, q);
+  const rows = db.all(`SELECT s.cli AS cli, COUNT(*) AS c ${built.baseSql} AND s.cli IS NOT NULL AND TRIM(s.cli)<>'' GROUP BY s.cli ORDER BY s.cli LIMIT 300`, built.params);
+  return { clis: rows.map(r => r.cli), items: rows.map(r => ({ cli: r.cli, count: r.c })), from: q.from, to: q.to };
+}, 'numbers_ver'));
+app.get('/api/sms/numbers', authRequired, (req, res) => cachedJson(req, res, 30000, () => {
+  /* P18: Number filter list = current report dataset (same filters/scope as /api/sms/paged) */
+  const q = { ...(req.query || {}) };
+  const dq = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+  if (!dq(q.from)) delete q.from;
+  if (!dq(q.to)) delete q.to;
+  if (!q.from && !q.to) { q.from = ukTodayDateStr(0); q.to = q.from; }
+  else if (q.from && !q.to) q.to = q.from;
+  else if (!q.from && q.to) q.from = q.to;
+  if (q.from > q.to) { const t = q.from; q.from = q.to; q.to = t; }
+  const built = buildSmsPagedQuery(req.user, q);
+  const rows = db.all(`SELECT s.number AS number, COUNT(*) AS c ${built.baseSql} AND s.number IS NOT NULL AND TRIM(s.number)<>'' GROUP BY s.number ORDER BY s.number LIMIT 300`, built.params);
+  return { numbers: rows.map(r => r.number), items: rows.map(r => ({ number: r.number, count: r.c })), from: q.from, to: q.to };
+}, 'numbers_ver'));
 
 // aggregated stats by dimension
 app.get('/api/stats/:by', authRequired, (req, res) => {
@@ -2585,7 +3830,40 @@ function numberScopeWhere(user, alias = '') {
   if (user.role === 'client') return { where: `${p}client_id=?`, params: [user.id] };
   return { where: '1=1', params: [] };
 }
-app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 10000, () => {
+/* GALAXY: hierarchy counts for User Management lists (3 GROUP BYs + numbers
+   counts via existing leading-column indexes; cached 30s — no N+1). */
+app.get('/api/users/hierarchy-stats', authRequired, requireRole('admin', 'manager'), (req, res) => cachedJson(req, res, 30000, () => {
+  const u = req.user;
+  const out = { managers: {}, agents: {}, clients: {} };
+  try {
+    db.all(`SELECT parent_id pid, COUNT(*) c FROM users WHERE role='agent' AND parent_id IS NOT NULL GROUP BY 1`)
+      .forEach(r => { out.managers[r.pid] = out.managers[r.pid] || { agents: 0, clients: 0, numbers: 0 }; out.managers[r.pid].agents = r.c; });
+    db.all(`SELECT parent_id pid, COUNT(*) c FROM users WHERE role='client' AND parent_id IS NOT NULL GROUP BY 1`)
+      .forEach(r => { out.agents[r.pid] = out.agents[r.pid] || { clients: 0, numbers: 0 }; out.agents[r.pid].clients = r.c; });
+    db.all(`SELECT m.id mid, COUNT(*) c FROM users m JOIN users a ON a.role='agent' AND a.parent_id=m.id JOIN users cl ON cl.role='client' AND cl.parent_id=a.id WHERE m.role='manager' GROUP BY 1`)
+      .forEach(r => { out.managers[r.mid] = out.managers[r.mid] || { agents: 0, clients: 0, numbers: 0 }; out.managers[r.mid].clients = r.c; });
+    db.all(`SELECT manager_id pid, COUNT(*) c FROM numbers WHERE manager_id IS NOT NULL GROUP BY 1`)
+      .forEach(r => { out.managers[r.pid] = out.managers[r.pid] || { agents: 0, clients: 0, numbers: 0 }; out.managers[r.pid].numbers = r.c; });
+    db.all(`SELECT agent_id pid, COUNT(*) c FROM numbers WHERE agent_id IS NOT NULL GROUP BY 1`)
+      .forEach(r => { out.agents[r.pid] = out.agents[r.pid] || { clients: 0, numbers: 0 }; out.agents[r.pid].numbers = r.c; });
+    db.all(`SELECT client_id pid, COUNT(*) c FROM numbers WHERE client_id IS NOT NULL GROUP BY 1`)
+      .forEach(r => { out.clients[r.pid] = out.clients[r.pid] || { numbers: 0 }; out.clients[r.pid].numbers = r.c; });
+  } catch (e) {}
+  if (u.role !== 'admin') {
+    const ags = db.all(`SELECT id FROM users WHERE role='agent' AND parent_id=?`, [u.id]).map(x => x.id);
+    const keepA = {}, keepC = {};
+    ags.forEach(id => { keepA[id] = out.agents[id] || { clients: 0, numbers: 0 }; });
+    if (ags.length) {
+      const ph = ags.map(() => '?').join(',');
+      db.all(`SELECT id FROM users WHERE role='client' AND parent_id IN (${ph})`, ags)
+        .forEach(x => { keepC[x.id] = out.clients[x.id] || { numbers: 0 }; });
+    }
+    return { managers: {}, agents: keepA, clients: keepC };
+  }
+  return out;
+}));
+
+app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 10000, () => { /* P19: verKey — number delete/alloc dashboard cache turant invalidate */
   const u = req.user;
   const smsScope = smsScopeWhere(u);
   const numScope = numberScopeWhere(u);
@@ -2669,20 +3947,139 @@ app.get('/api/dashboard', authRequired, (req, res) => cachedJson(req, res, 10000
         WHERE ${nScope.where}`, nScope.params)?.c || 0;
     }
   } catch(e) {}
-  return { sms_today: today, otp_today: today, successful_otp_today: successToday, failed_otp_today: failedToday, failed_sms_today: failedToday, total_sms: totalSms, failed_total: failedTotal, sms_yesterday: yesterday, sms_7d: d7, sms_month: month, payout_7d: payout7, payout_month: payoutMonth, managers, agents, clients, numbers, daily7, recent };
-}));
+  /* ===== GALAXY: additive dashboard fields (existing keys unchanged) ===== */
+  const smsYear = statSum(` AND stat_date >= ? AND stat_date <= ?`, [dToday.slice(0,4) + '-01-01', dToday]);
+  const dowMon = (new Date(dToday + 'T00:00:00Z').getUTCDay() + 6) % 7; // 0=Monday
+  const payoutWeek = statPay(` AND stat_date BETWEEN ? AND ?`, [ukTodayDateStr(-dowMon), dToday]);
+  let over_limit_today = 0, over_limit_week = 0, sms_by_country = [];
+  try {
+    const stCol = st.col ? ` AND s.${st.col}=?` : '';
+    const stP2 = st.params;
+    const overQ = (since) => db.get(`SELECT COUNT(*) c FROM (
+        SELECT s.number_id nid, COUNT(*) c FROM sms_records s WHERE s.received_at >= ? AND s.number_id IS NOT NULL${stCol} GROUP BY s.number_id
+      ) x JOIN numbers n ON n.id=x.nid WHERE CAST(n.sd_limit AS INTEGER)>0 AND x.c>=CAST(n.sd_limit AS INTEGER)`, [since, ...stP2])?.c || 0;
+    over_limit_today = overQ(dToday + ' 00:00:00');
+    over_limit_week = overQ(d7Start + ' 00:00:00');
+  } catch(e) {}
+  try {
+    const E164 = require('./e164-country.json');
+    /* P19b: cleanNum/since ab map query me use nahi hote (UK-day helper + JS-side prefix resolve) */
+    /* P14: scope locally derive karo (stCol/stP2 upar wale try ke andar const the — out of scope) */
+    const cCol = st.col ? ` AND s.${st.col}=?` : '';
+    const cParams = st.params || [];
+    const agg = {};
+    const isoToEntry = {}; for (const k of Object.keys(E164)) isoToEntry[E164[k][0]] = E164[k];
+    const addIso = (iso, c) => { const hit = isoToEntry[iso]; if (!hit) return; agg[iso] = agg[iso] || { iso: hit[0], name: hit[1], count: 0 }; agg[iso].count += c; };
+    /* P19b MAP FIX (3 bugs):
+       (1) TEST/DEMO rows (is_test=1) pehle map par aa rahe the jabki baaki sab real-stats
+           views unhe exclude karte hain — test numbers ke prefix se fake countries
+           (Russia/Afghanistan waghera) map par highlight hoti thi bina koi real message ke.
+       (2) "Today" window ab wahi UK-day hai jo cards use karte hain (ukDayOffsetSql) —
+           pehle UTC-midnight se count hota tha jo UK-day se mismatch tha.
+       (3) Attribution ab AUTHORITATIVE hai: number ke RANGE ka country (jo owner ne
+           Range Management me set kiya) pehle — warna E.164 longest-prefix (3->2->1 digit,
+           min 7 digits). Purana code sirf 2-digit-then-1-digit tha: UK numbers national
+           format (7xxx...) me "Russia" ban jate the, aur 3-digit codes (353 Ireland waghera)
+           kabhi show hi nahi hote the. Rollback: purane do SUBSTR queries + addCount. */
+    const COUNTRY_ALIAS = { uk: 'gb', 'united kingdom': 'gb', england: 'gb', britain: 'gb', 'great britain': 'gb', usa: 'us', 'united states': 'us', uae: 'ae', 'united arab emirates': 'ae', holland: 'nl', sri_lanka: 'lk' };
+    const e164NameToIso = {}; for (const k of Object.keys(E164)) e164NameToIso[E164[k][1].toLowerCase()] = E164[k][0];
+    const isoOfCountryText = (t) => { const k = String(t || '').trim().toLowerCase().replace(/[\s_]+/g, ' '); if (!k) return null; if (COUNTRY_ALIAS[k]) return COUNTRY_ALIAS[k]; return e164NameToIso[k] || null; };
+    const resolveByPrefix = (num) => { const s = String(num || '').replace(/[^\d]/g, ''); if (s.length < 7) return null; for (const L of [3, 2, 1]) { const hit = E164[s.slice(0, L)]; if (hit) return hit[0]; } return null; };
+    /* P14 FIX (retained): role-scoped exactly like the other cards. */
+    db.all(`SELECT s.number num, r.country rc, COUNT(*) c FROM sms_records s
+        LEFT JOIN ranges r ON r.id = s.range_id
+        WHERE ${ukDayOffsetSql('s.received_at', 0)} AND COALESCE(s.is_test,0)=0${cCol}
+        GROUP BY 1, 2`, cParams)
+      .forEach(row => {
+        const iso = isoOfCountryText(row.rc) || resolveByPrefix(row.num);
+        if (iso) addIso(iso, row.c);
+      });
+    sms_by_country = Object.values(agg).sort((a,b) => b.count - a.count);
+  } catch(e) {}
+  /* ===== /GALAXY ===== */
+  /* P19k #4: Real Provider Cost (ADMIN-ONLY) — Provider Rate × ELIGIBLE SMS count.
+     Eligibility = ingest-time engine ka AUTHORITATIVE result (payout_amount > 0 — yani
+     rate-limit/zero-rate ke BAAD jo paid bacha; "first N paid OTPs then zero" wahi
+     existing logic — koi doosri OTP-limit calculation NAHI).
+     Periods = existing dashboard windows: today / Monday-start UK week (payout_week
+     jaisa) / month / year. Cost per SMS = providerRateForPaymentCycle(range,
+     s.payment_type) — payoutRateForPaymentCycle ke candidate-order wala mirror.
+     Rollback: ye block + return ke 4 keys delete kar dein. */
+  let provider_cost_today, provider_cost_week, provider_cost_month, provider_cost_year;
+  if (u.role === 'admin') {
+    const provRateCache = new Map();
+    const rangeRowOf = (rid) => {
+      if (!provRateCache.has(rid)) provRateCache.set(rid, db.get(
+        'SELECT rate_1_1,rate_7_1,rate_7_7,rate_30_45,provider_rate_1_1,provider_rate_7_1,provider_rate_7_7,provider_rate_30_45 FROM ranges WHERE id=?', [rid]) || null);
+      return provRateCache.get(rid);
+    };
+    const costForWindow = (dFrom, dTo) => {
+      try {
+        const fromSql = ukLocalDateToUtcSql(dFrom, 0), toSql = ukLocalDateToUtcSql(dTo, 1);
+        const groups = db.all(`SELECT s.range_id rid, COALESCE(NULLIF(s.payment_type,''),'weekly') pt, COUNT(*) c
+          FROM sms_records s
+          WHERE COALESCE(s.is_test,0)=0 AND CAST(COALESCE(NULLIF(s.payout_amount,''),'0') AS REAL)>0
+            AND s.received_at >= ? AND s.received_at < ? AND s.range_id IS NOT NULL
+          GROUP BY 1,2`, [fromSql, toSql]);
+        let cost = 0;
+        for (const g of groups) {
+          const r = rangeRowOf(g.rid); if (!r) continue;
+          const rate = parseFloat(providerRateForPaymentCycle(r, g.pt)) || 0;
+          if (rate > 0) cost += rate * (g.c || 0);
+        }
+        return normalizeDecimalString(cost) || '0';
+      } catch (e) { return '0'; }
+    };
+    provider_cost_today = costForWindow(dToday, dToday);
+    provider_cost_week = costForWindow(ukTodayDateStr(-dowMon), dToday);
+    provider_cost_month = costForWindow(monthStart, dToday);
+    provider_cost_year = costForWindow(dToday.slice(0, 4) + '-01-01', dToday);
+  }
+  return { sms_today: today, otp_today: today, successful_otp_today: successToday, failed_otp_today: failedToday, failed_sms_today: failedToday, total_sms: totalSms, failed_total: failedTotal, sms_yesterday: yesterday, sms_7d: d7, sms_month: month, payout_7d: payout7, payout_month: payoutMonth, managers, agents, clients, numbers, daily7, recent, sms_year: smsYear, payout_week: payoutWeek, over_limit_today, over_limit_week, sms_by_country, provider_cost_today, provider_cost_week, provider_cost_month, provider_cost_year };
+}, 'numbers_ver'));
 
 
 /* ============ NUMBER IMPORT (Admin only, background/batched) ============ */
 function makeImportJobId(){return 'IMPORT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,8).toUpperCase();}
-function normalizeNumberForImport(n){return String(n||'').trim();}
+function normalizeNumberForImport(n){
+  if (!n) return '';
+  let s = String(n || '').trim();
+  s = s.replace(/^\uFEFF/, '').replace(/^["']+|["']+$/g, '').trim();
+  const hasPlus = s.startsWith('+');
+  const digits = s.replace(/\D/g, '');
+  if (digits.length < 5) return '';
+  return (hasPlus ? '+' : '') + digits;
+}
+function parseImportLineTokens(line) {
+  let s = String(line || '').replace(/^\uFEFF/, '').trim();
+  if (!s) return [];
+  const cells = s.includes('\t') || s.includes(';') || s.includes(',')
+    ? s.split(/[\t,;]+/)
+    : [s];
+  const results = [];
+  for (const cell of cells) {
+    const raw = cell.replace(/^["']+|["']+$/g, '').trim();
+    if (!raw) continue;
+    const spaceTokens = raw.split(/\s+/).filter(Boolean);
+    if (spaceTokens.length > 1 && spaceTokens.every(t => t.replace(/\D/g, '').length >= 5)) {
+      for (const t of spaceTokens) {
+        const norm = normalizeNumberForImport(t);
+        if (norm) results.push(norm);
+      }
+      continue;
+    }
+    const norm = normalizeNumberForImport(raw);
+    if (norm) results.push(norm);
+  }
+  return results;
+}
 function getOrCreateRange(range_id, range_name, prefix, firstNumber){
   if(range_id) return +range_id;
   if(!range_name) throw new Error('range_id or range_name is required');
-  const existing=db.get('SELECT id FROM ranges WHERE name=?',[range_name]);
+  const existing=db.get(`SELECT id FROM ranges WHERE name=? AND (deleted_at IS NULL OR COALESCE(deleted_at,'')='') ORDER BY id DESC LIMIT 1`,[range_name]);
   if(existing) return existing.id;
   db.run(`INSERT INTO ranges (name,prefix,test_number,currency) VALUES (?,?,?,?)`,[range_name,prefix||'', '', 'USD']);
-  return db.get('SELECT id FROM ranges WHERE name=? ORDER BY id DESC LIMIT 1',[range_name]).id;
+  return db.get(`SELECT id FROM ranges WHERE name=? AND (deleted_at IS NULL OR COALESCE(deleted_at,'')='') ORDER BY id DESC LIMIT 1`,[range_name]).id;
 }
 async function processNumberImportJob(jobId, payload, user){
   console.log('[IMPORT] started', { jobId, total: (payload.numbers||[]).length, range_name: payload.range_name || '', file_name: payload.file_name || '' });
@@ -2704,7 +4101,8 @@ async function processNumberImportJob(jobId, payload, user){
           const number=normalizeNumberForImport(raw);
           processed++;
           if(!number){skipped++; continue;}
-          if(db.get('SELECT id FROM numbers WHERE number=?',[number])){skipped++; continue;}
+          const cleaned = cleanPhone(number);
+          if(db.get(`SELECT id FROM numbers WHERE number=? OR REPLACE(REPLACE(REPLACE(REPLACE(number,'+',''),' ',''),'-',''),'_','')=?`,[number, cleaned])){skipped++; continue;}
           db.runNoSave(`INSERT INTO numbers (range_id,number,prefix,payterm,payout,import_batch_id,import_source,imported_by,imported_at) VALUES (?,?,?,?,?,?,?,?,datetime('now'))`,
             [rid,number,prefix||'',payterm||'Weekly',payout||'0',jobId,'file',user.id]);
           inserted++;
@@ -2723,10 +4121,14 @@ async function processNumberImportJob(jobId, payload, user){
     console.log('[IMPORT] completed', { jobId, inserted, skipped, total: numbers.length });
     db.run(`UPDATE number_import_batches SET inserted=?, skipped=?, status='done', completed_at=datetime('now') WHERE batch_id=?`,[inserted,skipped,jobId]);
     logAction({user},'import_numbers_background','numbers',{jobId,inserted,skipped,range_id:rid});
+    clearApiReadCache();
+    bumpNumbersVer();
   }catch(e){
     job.status='failed'; job.error=e.message;
     console.error('[IMPORT] failed', { jobId, error: e.message });
     db.run(`UPDATE number_import_batches SET status='failed', error=?, completed_at=datetime('now') WHERE batch_id=?`,[e.message,jobId]);
+    clearApiReadCache();
+    bumpNumbersVer();
   }
 }
 // PHASE-2: streaming multipart import — large CSV/number files (up to 200 MB)
@@ -2753,7 +4155,6 @@ app.post('/api/numbers/import-file', authRequired, requireRole('admin'), heavyWr
         db.run(`INSERT INTO number_import_batches (batch_id,range_id,range_name,file_name,total,status,created_by) VALUES (?,?,?,?,?,'processing',?)`,
           [jobId, rid, range_name, b.file_name || req.file.originalname || '', 0, (req.user && req.user.id) || null]);
         job.status = 'processing';
-        const rl = readline.createInterface({ input: fs.createReadStream(req.file.path), crlfDelay: Infinity });
         let batch = [];
         const flush = () => {
           if (!batch.length) return;
@@ -2761,7 +4162,11 @@ app.post('/api/numbers/import-file', authRequired, requireRole('admin'), heavyWr
           try {
             for (const number of batch) {
               processed++;
-              if (db.get('SELECT id FROM numbers WHERE number=?', [number])) { skipped++; continue; }
+              const cleaned = cleanPhone(number);
+              if (db.get(`SELECT id FROM numbers WHERE number=? OR REPLACE(REPLACE(REPLACE(REPLACE(number,'+',''),' ',''),'-',''),'_','')=?`, [number, cleaned])) {
+                skipped++;
+                continue;
+              }
               db.runNoSave(`INSERT INTO numbers (range_id,number,prefix,payterm,payout,import_batch_id,import_source,imported_by,imported_at) VALUES (?,?,?,?,?,?,?,?,datetime('now'))`,
                 [rid, number, b.prefix || '', b.payterm || 'Weekly', b.payout || '0', jobId, 'file', (req.user && req.user.id) || null]);
               inserted++;
@@ -2772,26 +4177,50 @@ app.post('/api/numbers/import-file', authRequired, requireRole('admin'), heavyWr
           job.processed = processed; job.inserted = inserted; job.skipped = skipped;
           job.total = processed; job.progress = 0; // total unknown until stream ends
         };
-        for await (let line of rl) {
-          line = String(line || '').trim();
-          if (!line) continue;
-          let tok = line.split(/[\t,;]/)[0].replace(/^["']+|["']+$/g, '').trim();
-          const number = normalizeNumberForImport(tok);
-          if (!number) { continue; }
-          if (batch.length >= 1000) { flush(); await new Promise(r => setImmediate(r)); }
-          batch.push(number);
+
+        const isExcel = /\.xlsx?$/i.test(b.file_name || req.file.originalname || '');
+        if (isExcel) {
+          const XLSX = require('xlsx');
+          const wb = XLSX.readFile(req.file.path);
+          for (const sheet of wb.SheetNames || []) {
+            const ws = wb.Sheets[sheet];
+            const data = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+            for (const row of data) {
+              if (Array.isArray(row)) {
+                for (const cell of row) {
+                  const norm = normalizeNumberForImport(cell);
+                  if (norm) {
+                    batch.push(norm);
+                    if (batch.length >= 1000) { flush(); await new Promise(r => setImmediate(r)); }
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          const rl = readline.createInterface({ input: fs.createReadStream(req.file.path), crlfDelay: Infinity });
+          for await (let line of rl) {
+            const nums = parseImportLineTokens(line);
+            for (const number of nums) {
+              batch.push(number);
+              if (batch.length >= 1000) { flush(); await new Promise(r => setImmediate(r)); }
+            }
+          }
         }
         flush();
         job.status = 'done'; job.progress = 100; job.completed_at = new Date().toISOString();
         db.run(`UPDATE number_import_batches SET total=?, inserted=?, skipped=?, status='done', completed_at=datetime('now') WHERE batch_id=?`,
           [processed, inserted, skipped, jobId]);
         logAction({ user: req.user }, 'import_numbers_file', 'numbers', { jobId, inserted, skipped, total: processed });
+        clearApiReadCache();
         bumpNumbersVer();
         console.log('[IMPORT-FILE] completed', { jobId, inserted, skipped, total: processed, s: ((Date.now() - t0) / 1000).toFixed(1) });
       } catch (e) {
         job.status = 'failed'; job.error = e.message;
         try { db.run(`UPDATE number_import_batches SET status='failed', error=?, completed_at=datetime('now') WHERE batch_id=?`, [e.message, jobId]); } catch (_) {}
         console.error('[IMPORT-FILE] failed:', e.message);
+        clearApiReadCache();
+        bumpNumbersVer();
       } finally { try { fs.unlinkSync(req.file.path); } catch (_) {} }
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2837,41 +4266,116 @@ app.delete('/api/numbers/imported-all', authRequired, requireRole('admin'), (req
 function paymentTypesSettings(){ return db.all('SELECT * FROM payment_v2_settings WHERE active=1 ORDER BY sort_order ASC').map(r=>({payment_type:r.payment_type,label:r.label,min_withdrawal:normalizeDecimalString(r.min_withdrawal)||'0'})); }
 function agentPaymentSummary(agentId){
   return paymentTypesSettings().map(t=>{
-    const available=paymentOpenBalance(agentId,t.payment_type,true), pending=paymentPendingAmount(agentId,t.payment_type), minimum=t.min_withdrawal;
-    return {...t, available_balance:available, pending_amount:pending, minimum, can_request:cents(available)>=cents(minimum) && cents(available)>0 && cents(pending)===0};
+    /* P16: earned-but-not-yet-eligible ledger bhi report karo (warna agent ko sab $0 nazar aata tha) */
+    const openAll=paymentOpenBalance(agentId,t.payment_type,false), available=paymentOpenBalance(agentId,t.payment_type,true), pending=paymentPendingAmount(agentId,t.payment_type), minimum=t.min_withdrawal;
+    const earnedPending=moneyFromCents(Math.max(0,cents(openAll)-cents(available)));
+    const nextEligible=(db.get(`SELECT MIN(eligible_at) AS d FROM payment_ledger WHERE agent_id=? AND payment_type=? AND status='open' AND eligible_at>?`,[agentId,normalizePaymentType(t.payment_type),utcSqlFromMs(Date.now())])||{}).d||'';
+    return {...t, available_balance:available, earned_amount:earnedPending, next_eligible_at:nextEligible, pending_amount:pending, minimum, can_request:cents(available)>=cents(minimum) && cents(available)>0 && cents(pending)===0};
   });
 }
 app.get('/api/payment-v2/settings', authRequired, requireRole('admin'), (req,res)=>res.json(paymentTypesSettings()));
+
+/* ============ P18: PAYMENT SCHEDULE (admin-only config, future periods only) ============ */
+function schedulePreviewFor(type){
+  const nowUk = (()=>{ const p=ukParts(new Date()); return `${p.year}-${p.month}-${p.day}`; })();
+  const per=schedulePeriodFor(normalizePaymentType(type), nowUk);
+  return { payment_type: normalizePaymentType(type), period_start: per.start, period_end: per.end, payment_date: ukDateStrOfMs(per.payMs), uk_today: nowUk };
+}
+app.get('/api/payment-v2/schedule', authRequired, requireRole('admin'), (req,res)=>{
+  const rows=db.all('SELECT * FROM payment_schedule ORDER BY CASE payment_type WHEN \'daily\' THEN 1 WHEN \'weekly\' THEN 2 ELSE 3 END');
+  const types=['daily','weekly','monthly_30x45'];
+  res.json({ schedule: rows.length?rows:types.map(t=>({payment_type:t,...PAY_SCHEDULE_DEFAULTS})), preview: types.map(schedulePreviewFor) });
+});
+app.put('/api/payment-v2/schedule', authRequired, requireRole('admin'), (req,res)=>{
+  const b=req.body||{}; const type=normalizePaymentType(String(b.payment_type||''));
+  if(!['daily','weekly','monthly_30x45'].includes(type)) return res.status(400).json({error:'Invalid payment_type'});
+  const cl=(v,lo,hi,dflt)=>{ const n=parseInt(v,10); return Number.isFinite(n)?Math.min(hi,Math.max(lo,n)):dflt; };
+  if(type==='weekly'){
+    const s=cl(b.weekly_start_dow,0,6,1), p=cl(b.weekly_pay_dow,0,6,3);
+    db.run('UPDATE payment_schedule SET weekly_start_dow=?, weekly_pay_dow=?, updated_at=datetime(\'now\'), updated_by=? WHERE payment_type=?',[s,p,req.user.id,type]);
+  } else if(type==='monthly_30x45'){
+    const sd=cl(b.monthly_start_day,1,28,1), dl=cl(b.monthly_delay_days,0,180,45);
+    db.run('UPDATE payment_schedule SET monthly_start_day=?, monthly_delay_days=?, updated_at=datetime(\'now\'), updated_by=? WHERE payment_type=?',[sd,dl,req.user.id,type]);
+  } else {
+    return res.status(400).json({error:'Daily schedule fixed (next UK midnight) — nothing to configure'});
+  }
+  logAction(req,'payment_schedule_update','payments',{type, body:b});
+  const rows=db.all('SELECT * FROM payment_schedule ORDER BY CASE payment_type WHEN \'daily\' THEN 1 WHEN \'weekly\' THEN 2 ELSE 3 END');
+  res.json({ ok:true, schedule: rows, preview: ['daily','weekly','monthly_30x45'].map(schedulePreviewFor) });
+});
 app.put('/api/payment-v2/settings', authRequired, requireRole('admin'), (req,res)=>{
   const rows=Array.isArray(req.body?.settings)?req.body.settings:[];
   rows.forEach(r=>{ const t=normalizePaymentType(r.payment_type); db.run('UPDATE payment_v2_settings SET min_withdrawal=?, updated_at=datetime(\'now\') WHERE payment_type=?',[normalizeDecimalString(r.min_withdrawal)||'0',t]); paymentAudit(req,'update_minimum',{payment_type:t,amount:r.min_withdrawal,status:'settings'}); });
   res.json({ok:true,settings:paymentTypesSettings()});
 });
-app.get('/api/payment-v2/agent/summary', authRequired, requireRole('agent'), (req,res)=>res.json({agent_id:req.user.id, balances:agentPaymentSummary(req.user.id), wallet:db.get('SELECT * FROM agent_wallets WHERE agent_id=?',[req.user.id])||{wallet_address:'',network:'USDT_TRC20'}}));
-app.get('/api/payment-v2/agent/wallet', authRequired, requireRole('agent'), (req,res)=>res.json(db.get('SELECT * FROM agent_wallets WHERE agent_id=?',[req.user.id])||{wallet_address:'',network:'USDT_TRC20'}));
-app.put('/api/payment-v2/agent/wallet', authRequired, requireRole('agent'), (req,res)=>{
-  const wallet=String(req.body?.wallet_address||'').trim(); if(!walletValid(wallet)) return res.status(400).json({error:'Invalid USDT TRC20 wallet. It should start with T and be 34 characters.'});
-  const ex=db.get('SELECT agent_id FROM agent_wallets WHERE agent_id=?',[req.user.id]);
-  if(ex) db.run('UPDATE agent_wallets SET wallet_address=?,network=\'USDT_TRC20\',updated_at=datetime(\'now\') WHERE agent_id=?',[wallet,req.user.id]);
-  else db.run('INSERT INTO agent_wallets (agent_id,wallet_address,network) VALUES (?,?,\'USDT_TRC20\')',[req.user.id,wallet]);
-  paymentAudit(req,'update_wallet',{agent_id:req.user.id,wallet_address:wallet,status:'saved'});
-  res.json({ok:true,wallet_address:wallet,network:'USDT_TRC20'});
+/* Account Security PIN Unlock on Agent Payment endpoints */
+function requireAgentChatUnlock(req, res, next) {
+  if (!req.user || req.user.role !== 'agent') return next();
+
+  const cred = db.get('SELECT chat_enabled FROM chat_credentials WHERE user_id = ?', [req.user.id]);
+  if (cred && (cred.chat_enabled === 0 || cred.chat_enabled === false)) {
+    return next();
+  }
+
+  const token = req.headers['x-chat-unlock-token'] || req.headers['x-pin-unlock-token'];
+  if (!token) {
+    return res.status(403).json({ error: 'Security PIN verification required to access payment section', locked: true });
+  }
+  try {
+    const decoded = jwt.verify(token, SECRET);
+    if (decoded && (decoded.type === 'chat_unlocked' || decoded.type === 'account_pin_unlocked') && decoded.id === req.user.id) {
+      return next();
+    }
+  } catch (_) {}
+  return res.status(403).json({ error: 'Security PIN verification required or session expired', locked: true });
+}
+
+app.get('/api/payment-v2/agent/summary', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>res.json({agent_id:req.user.id, balances:agentPaymentSummary(req.user.id), wallet:db.get('SELECT * FROM agent_wallets WHERE agent_id=?',[req.user.id])||{binance_uid:'',network:'BINANCE_UID'}}));
+app.get('/api/payment-v2/agent/wallet', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>res.json(db.get('SELECT * FROM agent_wallets WHERE agent_id=?',[req.user.id])||{binance_uid:'',network:'BINANCE_UID'}));
+app.put('/api/payment-v2/agent/wallet', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>{
+  /* P19j: Binance UID replaces the USDT TRC20 wallet address. Once set, it is locked
+     for security so funds cannot be redirected if an agent session is compromised.
+     Only Admin can update an existing locked Binance UID. */
+  const uid=String(req.body?.binance_uid ?? req.body?.wallet_address ?? '').trim();
+  if(!uid) return res.status(400).json({error:'Binance UID is required.'});
+  if(!binanceUidValid(uid)) return res.status(400).json({error:'Invalid Binance UID. It must be the 8-12 digit numeric UID from your Binance account.'});
+  const ex=db.get('SELECT agent_id, binance_uid FROM agent_wallets WHERE agent_id=?',[req.user.id]);
+  if(ex && ex.binance_uid && binanceUidValid(ex.binance_uid)) {
+    return res.status(403).json({error:'Your Binance UID is locked for security. Please contact Admin Support to update your Binance UID.'});
+  }
+  if(ex) db.run("UPDATE agent_wallets SET binance_uid=?,network='BINANCE_UID',updated_at=datetime('now') WHERE agent_id=?",[uid,req.user.id]);
+  else db.run("INSERT INTO agent_wallets (agent_id,binance_uid,network) VALUES (?,?,'BINANCE_UID')",[req.user.id,uid]);
+  paymentAudit(req,'update_wallet',{agent_id:req.user.id,wallet_address:'',status:'saved',details:{binance_uid:uid}});
+  res.json({ok:true,binance_uid:uid,network:'BINANCE_UID'});
 });
-app.post('/api/payment-v2/agent/request', authRequired, requireRole('agent'), (req,res)=>{
+app.put('/api/payment-v2/admin/agents/:id/wallet', authRequired, requireRole('admin'), (req,res)=>{
+  const agentId=+req.params.id;
+  const uid=String(req.body?.binance_uid ?? '').trim();
+  if(!uid) return res.status(400).json({error:'Binance UID is required.'});
+  if(!binanceUidValid(uid)) return res.status(400).json({error:'Invalid Binance UID. It must be the 8-12 digit numeric UID.'});
+  const ex=db.get('SELECT agent_id FROM agent_wallets WHERE agent_id=?',[agentId]);
+  if(ex) db.run("UPDATE agent_wallets SET binance_uid=?,network='BINANCE_UID',updated_at=datetime('now') WHERE agent_id=?",[uid,agentId]);
+  else db.run("INSERT INTO agent_wallets (agent_id,binance_uid,network) VALUES (?,?,'BINANCE_UID')",[agentId,uid]);
+  paymentAudit(req,'admin_update_wallet',{agent_id:agentId,status:'saved',details:{binance_uid:uid}});
+  res.json({ok:true,agent_id:agentId,binance_uid:uid});
+});
+app.post('/api/payment-v2/agent/request', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>{
+  /* P19j: request now requires a saved Binance UID (was: valid TRC20 wallet). Calculations, eligibility,
+     pending-duplicate and approval flow are UNCHANGED. PREVIOUS: walletValid(wallet.wallet_address) gate + wallet_address in INSERT. */
   const type=normalizePaymentType(req.body?.payment_type); const wallet=db.get('SELECT * FROM agent_wallets WHERE agent_id=?',[req.user.id]);
-  if(!wallet || !walletValid(wallet.wallet_address)) return res.status(400).json({error:'Save a valid USDT (TRC20) wallet first.'});
+  if(!wallet || !binanceUidValid(wallet.binance_uid)) return res.status(400).json({error:'Save your Binance UID first (Payment page).'});
   if(db.get("SELECT id FROM payment_requests_v2 WHERE agent_id=? AND payment_type=? AND status='Pending'",[req.user.id,type])) return res.status(409).json({error:'A pending request already exists for this payment type.'});
   const amount=paymentOpenBalance(req.user.id,type,true); const min=paymentMinimum(type); if(cents(amount)<=0 || cents(amount)<cents(min)) return res.status(400).json({error:`Minimum withdrawal not reached. Available ${amount}, minimum ${min}.`});
   const rows=db.all("SELECT id FROM payment_ledger WHERE agent_id=? AND payment_type=? AND status='open' AND eligible_at<=?",[req.user.id,type,utcSqlFromMs(Date.now())]); if(!rows.length) return res.status(400).json({error:'No eligible balance found.'});
   try{ db.execNoSave('BEGIN');
-    const ins=db.runNoSave(`INSERT INTO payment_requests_v2 (agent_id,manager_id,payment_type,amount,wallet_address,status) VALUES (?,?,?,?,?,'Pending')`,[req.user.id,agentManagerId(req.user.id),type,amount,wallet.wallet_address]);
+    const ins=db.runNoSave(`INSERT INTO payment_requests_v2 (agent_id,manager_id,payment_type,amount,wallet_address,binance_uid,status) VALUES (?,?,?,?,?,?, 'Pending')`,[req.user.id,agentManagerId(req.user.id),type,amount,'',wallet.binance_uid]);
     const ph=rows.map(()=>'?').join(','); db.runNoSave(`UPDATE payment_ledger SET status='requested',request_id=? WHERE id IN (${ph})`,[ins.lastInsertRowid,...rows.map(r=>r.id)]);
-    db.execNoSave('COMMIT'); db.save(); paymentNotify(req.user.id,ins.lastInsertRowid,'submitted',`${paymentTypeLabel(type)} payment request submitted: $${amount}`); paymentAudit(req,'request_submitted',{request_id:ins.lastInsertRowid,agent_id:req.user.id,manager_id:agentManagerId(req.user.id),payment_type:type,amount,wallet_address:wallet.wallet_address,status:'Pending'}); res.json({ok:true,id:ins.lastInsertRowid,amount,status:'Pending'});
+    db.execNoSave('COMMIT'); db.save(); paymentNotify(req.user.id,ins.lastInsertRowid,'submitted',`${paymentTypeLabel(type)} payment request submitted: $${amount}`); paymentAudit(req,'request_submitted',{request_id:ins.lastInsertRowid,agent_id:req.user.id,manager_id:agentManagerId(req.user.id),payment_type:type,amount,wallet_address:'',status:'Pending',details:{binance_uid:wallet.binance_uid}}); res.json({ok:true,id:ins.lastInsertRowid,amount,status:'Pending'});
   }catch(e){ try{db.execNoSave('ROLLBACK')}catch(_){} res.status(500).json({error:e.message}); }
 });
-app.get('/api/payment-v2/agent/requests', authRequired, requireRole('agent'), (req,res)=>res.json(db.all('SELECT * FROM payment_requests_v2 WHERE agent_id=? ORDER BY id DESC LIMIT 300',[req.user.id])));
-app.get('/api/payment-v2/agent/notifications', authRequired, requireRole('agent'), (req,res)=>res.json(db.all('SELECT * FROM payment_notifications_v2 WHERE agent_id=? ORDER BY id DESC LIMIT 100',[req.user.id])));
-app.post('/api/payment-v2/agent/notifications/read-all', authRequired, requireRole('agent'), (req,res)=>{db.run("UPDATE payment_notifications_v2 SET read_at=datetime('now') WHERE agent_id=? AND read_at IS NULL",[req.user.id]);res.json({ok:true});});
+app.get('/api/payment-v2/agent/requests', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>res.json(db.all('SELECT * FROM payment_requests_v2 WHERE agent_id=? ORDER BY id DESC LIMIT 300',[req.user.id])));
+app.get('/api/payment-v2/agent/notifications', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>res.json(db.all('SELECT * FROM payment_notifications_v2 WHERE agent_id=? ORDER BY id DESC LIMIT 100',[req.user.id])));
+app.post('/api/payment-v2/agent/notifications/read-all', authRequired, requireRole('agent'), requireAgentChatUnlock, (req,res)=>{db.run("UPDATE payment_notifications_v2 SET read_at=datetime('now') WHERE agent_id=? AND read_at IS NULL",[req.user.id]);res.json({ok:true});});
 app.get('/api/payment-v2/manager/agents', authRequired, requireRole('manager'), (req,res)=>{
   const agents=db.all("SELECT id,username,name FROM users WHERE role='agent' AND parent_id=? ORDER BY username COLLATE NOCASE",[req.user.id]);
   res.json(agents.map(a=>({agent_id:a.id,agent_name:a.username,name:a.name||'',balances:agentPaymentSummary(a.id),payment_status:db.get("SELECT status FROM payment_requests_v2 WHERE agent_id=? ORDER BY id DESC LIMIT 1",[a.id])?.status||'No Request'})));
@@ -2888,12 +4392,12 @@ app.get('/api/payment-v2/admin/requests', authRequired, requireRole('admin'), (r
 });
 app.post('/api/payment-v2/admin/requests/:id/reject', authRequired, requireRole('admin'), (req,res)=>{
   const id=+req.params.id; const r=db.get("SELECT * FROM payment_requests_v2 WHERE id=? AND status='Pending'",[id]); if(!r)return res.status(404).json({error:'Pending request not found'});
-  try{db.execNoSave('BEGIN'); db.runNoSave("UPDATE payment_requests_v2 SET status='Rejected',reject_reason=?,processed_by=?,rejected_at=datetime('now'),admin_notes=? WHERE id=?",[req.body?.reason||'',req.user.id,req.body?.notes||'',id]); db.runNoSave("UPDATE payment_ledger SET status='open',request_id=NULL WHERE request_id=?",[id]); db.execNoSave('COMMIT'); db.save(); paymentNotify(r.agent_id,id,'rejected',`${paymentTypeLabel(r.payment_type)} payment request rejected.`); paymentAudit(req,'request_rejected',{request_id:id,agent_id:r.agent_id,manager_id:r.manager_id,payment_type:r.payment_type,amount:r.amount,wallet_address:r.wallet_address,status:'Rejected',details:{reason:req.body?.reason||''}}); res.json({ok:true});}catch(e){try{db.execNoSave('ROLLBACK')}catch(_){} res.status(500).json({error:e.message});}
+  try{db.execNoSave('BEGIN'); db.runNoSave("UPDATE payment_requests_v2 SET status='Rejected',reject_reason=?,processed_by=?,rejected_at=datetime('now'),admin_notes=? WHERE id=?",[req.body?.reason||'',req.user.id,req.body?.notes||'',id]); db.runNoSave("UPDATE payment_ledger SET status='open',request_id=NULL WHERE request_id=?",[id]); db.execNoSave('COMMIT'); db.save(); paymentNotify(r.agent_id,id,'rejected',`${paymentTypeLabel(r.payment_type)} payment request rejected.`); paymentAudit(req,'request_rejected',{request_id:id,agent_id:r.agent_id,manager_id:r.manager_id,payment_type:r.payment_type,amount:r.amount,wallet_address:r.wallet_address,status:'Rejected',details:{reason:req.body?.reason||'',binance_uid:r.binance_uid||''}}); res.json({ok:true});}catch(e){try{db.execNoSave('ROLLBACK')}catch(_){} res.status(500).json({error:e.message});}
 });
 app.post('/api/payment-v2/admin/requests/:id/pay', authRequired, requireRole('admin'), upload.single('screenshot'), (req,res)=>{
   const id=+req.params.id; const r=db.get("SELECT * FROM payment_requests_v2 WHERE id=? AND status='Pending'",[id]); if(!r)return res.status(404).json({error:'Pending request not found'});
   let screenshotUrl=''; if(req.file&&req.file.buffer){ const dir=path.join(FRONTEND_ROOT,'uploads','payment-screenshots'); fs.mkdirSync(dir,{recursive:true}); const ext=(path.extname(req.file.originalname||'')||'.png').toLowerCase(); const file=`payment-${id}-${Date.now()}${ext}`; fs.writeFileSync(path.join(dir,file),req.file.buffer); screenshotUrl='/uploads/payment-screenshots/'+file; }
-  try{db.execNoSave('BEGIN'); db.runNoSave("UPDATE payment_requests_v2 SET status='Paid',processed_by=?,paid_at=datetime('now'),txid=?,screenshot_url=?,admin_notes=? WHERE id=?",[req.user.id,req.body?.txid||'',screenshotUrl,req.body?.notes||'',id]); db.runNoSave("UPDATE payment_ledger SET status='paid' WHERE request_id=?",[id]); db.execNoSave('COMMIT'); db.save(); paymentNotify(r.agent_id,id,'paid',`${paymentTypeLabel(r.payment_type)} payment sent: $${r.amount}`); paymentAudit(req,'payment_sent',{request_id:id,agent_id:r.agent_id,manager_id:r.manager_id,payment_type:r.payment_type,amount:r.amount,wallet_address:r.wallet_address,status:'Paid',details:{txid:req.body?.txid||'',screenshot_url:screenshotUrl,notes:req.body?.notes||''}}); res.json({ok:true,screenshot_url:screenshotUrl});}catch(e){try{db.execNoSave('ROLLBACK')}catch(_){} res.status(500).json({error:e.message});}
+  try{db.execNoSave('BEGIN'); db.runNoSave("UPDATE payment_requests_v2 SET status='Paid',processed_by=?,paid_at=datetime('now'),txid=?,screenshot_url=?,admin_notes=? WHERE id=?",[req.user.id,req.body?.txid||'',screenshotUrl,req.body?.notes||'',id]); db.runNoSave("UPDATE payment_ledger SET status='paid' WHERE request_id=?",[id]); db.execNoSave('COMMIT'); db.save(); paymentNotify(r.agent_id,id,'paid',`${paymentTypeLabel(r.payment_type)} payment sent: $${r.amount}`); paymentAudit(req,'payment_sent',{request_id:id,agent_id:r.agent_id,manager_id:r.manager_id,payment_type:r.payment_type,amount:r.amount,wallet_address:r.wallet_address,status:'Paid',details:{txid:req.body?.txid||'',screenshot_url:screenshotUrl,notes:req.body?.notes||'',binance_uid:r.binance_uid||''}}); res.json({ok:true,screenshot_url:screenshotUrl});}catch(e){try{db.execNoSave('ROLLBACK')}catch(_){} res.status(500).json({error:e.message});}
 });
 app.get('/api/payment-v2/admin/audit-logs', authRequired, requireRole('admin'), (req,res)=>res.json(db.all('SELECT * FROM payment_audit_logs ORDER BY id DESC LIMIT 1000')));
 
@@ -2989,7 +4493,20 @@ app.delete('/api/limit-management/:id', authRequired, requireRole('admin'), (req
 
 
 /* ============ PANEL SHARING (Admin-only external panel allocation) ============ */
-function sharingPublic(row){ return row ? {...row, password: undefined, password_hash: undefined} : row; }
+function sharingPublic(row){
+  if (!row) return row;
+  const { password, password_hash, ...rest } = row;
+  let safeHttp = rest.http_config;
+  if (safeHttp && typeof safeHttp === 'string') {
+    try {
+      const parsed = JSON.parse(safeHttp);
+      if (parsed.auth_token) parsed.auth_token = '********';
+      if (parsed.auth_password) parsed.auth_password = '********';
+      safeHttp = JSON.stringify(parsed);
+    } catch (_) {}
+  }
+  return { ...rest, http_config: safeHttp };
+}
 function sharingUserByAgent(agentId){ return db.get('SELECT * FROM sharing_users WHERE agent_user_id=? AND active=1', [agentId]); }
 function sharingAgentUser(row){ return db.get('SELECT * FROM users WHERE id=?', [row.agent_user_id]); }
 app.get('/api/panel-sharing/dashboard', authRequired, requireRole('admin'), (req,res)=>{
@@ -3006,10 +4523,13 @@ app.post('/api/panel-sharing/users', authRequired, requireRole('admin'), (req,re
   const b=req.body||{}; const panel=String(b.panel_name||'').trim(); const username=String(b.username||'').trim(); const password=String(b.password||'');
   if(!panel||!username||!password) return res.status(400).json({error:'panel_name, username and password required'});
   if(db.get('SELECT id FROM users WHERE username=? COLLATE NOCASE',[username])) return res.status(409).json({error:'Username already exists'});
+  const connType = String(b.connection_type || 'activity').toLowerCase();
+  const httpCfg = typeof b.http_config === 'object' ? JSON.stringify(b.http_config) : String(b.http_config || '');
+  const smppId = b.smpp_connection_id ? parseInt(b.smpp_connection_id, 10) : null;
   try{ db.beginBatch&&db.beginBatch();
     const ins=db.run(`INSERT INTO users (username,password,role,name,email,whatsapp,contact,skype,parent_id,active,payment_type) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [username,bcrypt.hashSync(password,10),'agent',String(b.user_name||panel),b.email||'',b.whatsapp||'',b.contact||'',b.skype||'',req.user.id,b.active===false?0:1,'weekly']);
-    db.run('INSERT INTO sharing_users (agent_user_id,panel_name,user_name,username,attribute_url,active,created_by) VALUES (?,?,?,?,?,?,?)',[ins.lastInsertRowid,panel,String(b.user_name||''),username,String(b.attribute_url||''),b.active===false?0:1,req.user.id]);
-    logAction(req,'create_sharing_user','panel_sharing',{panel_name:panel,username});
+    db.run('INSERT INTO sharing_users (agent_user_id,panel_name,user_name,username,attribute_url,active,created_by,connection_type,http_config,smpp_connection_id) VALUES (?,?,?,?,?,?,?,?,?,?)',[ins.lastInsertRowid,panel,String(b.user_name||''),username,String(b.attribute_url||''),b.active===false?0:1,req.user.id,connType,httpCfg,smppId]);
+    logAction(req,'create_sharing_user','panel_sharing',{panel_name:panel,username,connection_type:connType});
     res.json({ok:true,id:ins.lastInsertRowid});
   } finally { try{db.endBatch&&db.endBatch()}catch(e){} }
 });
@@ -3017,11 +4537,24 @@ app.put('/api/panel-sharing/users/:id', authRequired, requireRole('admin'), (req
   const id=+req.params.id; const row=db.get('SELECT * FROM sharing_users WHERE id=?',[id]); if(!row) return res.status(404).json({error:'Sharing user not found'});
   const b=req.body||{}; const panel=String(b.panel_name||row.panel_name).trim(); const username=String(b.username||row.username).trim();
   const other=db.get('SELECT id FROM users WHERE username=? COLLATE NOCASE AND id<>?',[username,row.agent_user_id]); if(other) return res.status(409).json({error:'Username already exists'});
+  const connType = String(b.connection_type || row.connection_type || 'activity').toLowerCase();
+  let httpCfg = b.http_config !== undefined ? (typeof b.http_config === 'object' ? JSON.stringify(b.http_config) : String(b.http_config)) : row.http_config;
+  // If password/token masked, keep existing
+  if (httpCfg && httpCfg.includes('********')) {
+    try {
+      const cur = JSON.parse(row.http_config || '{}');
+      const neu = JSON.parse(httpCfg);
+      if (neu.auth_token === '********') neu.auth_token = cur.auth_token || '';
+      if (neu.auth_password === '********') neu.auth_password = cur.auth_password || '';
+      httpCfg = JSON.stringify(neu);
+    } catch (_) {}
+  }
+  const smppId = b.smpp_connection_id !== undefined ? (b.smpp_connection_id ? parseInt(b.smpp_connection_id, 10) : null) : row.smpp_connection_id;
   try{ db.beginBatch&&db.beginBatch();
-    db.run('UPDATE sharing_users SET panel_name=?,user_name=?,username=?,attribute_url=?,active=?,updated_at=datetime(\'now\') WHERE id=?',[panel,String(b.user_name||''),username,String(b.attribute_url||''),b.active===false?0:1,id]);
+    db.run('UPDATE sharing_users SET panel_name=?,user_name=?,username=?,attribute_url=?,active=?,connection_type=?,http_config=?,smpp_connection_id=?,updated_at=datetime(\'now\') WHERE id=?',[panel,String(b.user_name||''),username,String(b.attribute_url||''),b.active===false?0:1,connType,httpCfg,smppId,id]);
     db.run('UPDATE users SET username=?,name=?,active=? WHERE id=?',[username,String(b.user_name||panel),b.active===false?0:1,row.agent_user_id]);
     if(b.password) db.run('UPDATE users SET password=? WHERE id=?',[bcrypt.hashSync(String(b.password),10),row.agent_user_id]);
-    logAction(req,'update_sharing_user','panel_sharing',{id,panel_name:panel});
+    logAction(req,'update_sharing_user','panel_sharing',{id,panel_name:panel,connection_type:connType});
     res.json({ok:true});
   } finally { try{db.endBatch&&db.endBatch()}catch(e){} }
 });
@@ -3032,48 +4565,611 @@ app.delete('/api/panel-sharing/users/:id', authRequired, requireRole('admin'), (
   logAction(req,'disable_sharing_user','panel_sharing',{id});
   res.json({ok:true});
 });
+app.get('/api/panel-sharing/ranges', authRequired, requireRole('admin'), (req, res) => {
+  const rows = db.all(`
+    SELECT r.id, r.name, r.prefix, COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern, r.currency, r.payment_type,
+           r.rate_1_1, r.rate_7_1, r.rate_7_7, r.rate_30_45,
+           COUNT(n.id) as total_numbers,
+           SUM(CASE WHEN n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL THEN 1 ELSE 0 END) as available_numbers
+    FROM ranges r
+    LEFT JOIN numbers n ON n.range_id=r.id
+    WHERE (r.deleted_at IS NULL OR r.deleted_at = '')
+    GROUP BY r.id
+    ORDER BY r.name COLLATE NOCASE ASC
+  `);
+  res.json(rows);
+});
 app.get('/api/panel-sharing/numbers', authRequired, requireRole('admin'), (req,res)=>cachedJson(req,res,1500,()=>{
   const q=String(req.query.search||'').trim(); const range=String(req.query.range||'').trim();
-  const where=['n.manager_id IS NULL','n.agent_id IS NULL','n.client_id IS NULL',"COALESCE(r.deleted_at,'')=''"], params=[];
+  const where=['n.manager_id IS NULL','n.agent_id IS NULL','n.client_id IS NULL',"(r.deleted_at IS NULL OR r.deleted_at='')"], params=[];
   if(q){where.push('(LOWER(n.number) LIKE ? OR LOWER(r.name) LIKE ?)'); params.push('%'+String(q).toLowerCase()+'%','%'+String(q).toLowerCase()+'%');}
   if(range){where.push('r.name=?'); params.push(range);}
   const total=db.get(`SELECT COUNT(*) c FROM numbers n LEFT JOIN ranges r ON r.id=n.range_id WHERE ${where.join(' AND ')}`,params)?.c||0;
-  const limitRaw=String(req.query.limit||25); const limit=limitRaw.toLowerCase()==='all'?Math.min(total||1,100000):Math.min(Math.max(parseInt(limitRaw)||25,1),1000);
+  const limitRaw=String(req.query.limit||25);
+  let limit = parseInt(limitRaw, 10);
+  if (isNaN(limit) || limit < 1) limit = 25;
+  if (limit > 5000) limit = 5000;
   const totalPages=Math.max(1,Math.ceil(total/limit)); const page=Math.min(Math.max(parseInt(req.query.page||1)||1,1),totalPages); const offset=(page-1)*limit;
-  const rows=db.all(`SELECT n.id,n.number,n.range_id,r.name AS range_name FROM numbers n LEFT JOIN ranges r ON r.id=n.range_id WHERE ${where.join(' AND ')} ORDER BY r.name COLLATE NOCASE,n.number LIMIT ? OFFSET ?`,[...params,limit,offset]);
+  const rows=db.all(`SELECT n.id,n.number,n.range_id,r.name AS range_name,r.prefix,COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern FROM numbers n LEFT JOIN ranges r ON r.id=n.range_id WHERE ${where.join(' AND ')} ORDER BY r.name COLLATE NOCASE,n.number LIMIT ? OFFSET ?`,[...params,limit,offset]);
   return {rows,total,page,limit,totalPages};
 }));
 app.post('/api/panel-sharing/allocate', authRequired, requireRole('admin'), (req,res)=>{
-  const b=req.body||{}; const userId=+b.sharing_user_id; const ids=(Array.isArray(b.ids)?b.ids:[]).map(x=>parseInt(x,10)).filter(x=>x>0);
-  const su=db.get('SELECT * FROM sharing_users WHERE id=? AND active=1',[userId]); if(!su) return res.status(404).json({error:'Sharing user not found'});
-  if(!ids.length) return res.status(400).json({error:'ids[] required'});
-  const ph=ids.map(()=>'?').join(',');
-  const rows=db.all(`SELECT n.id,n.number,r.name AS range_name FROM numbers n LEFT JOIN ranges r ON r.id=n.range_id WHERE n.id IN (${ph}) AND n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL`, ids);
-  if(!rows.length) return res.status(404).json({error:'No unallocated numbers found'});
-  try{ db.beginBatch&&db.beginBatch();
-    const rowIds=rows.map(r=>r.id); const ph2=rowIds.map(()=>'?').join(',');
-    db.run(`UPDATE numbers SET agent_id=?, manager_id=NULL, client_id=NULL, payout='0', rate='', payterm='weekly' WHERE id IN (${ph2})`, [su.agent_user_id,...rowIds]);
-    rows.forEach(nr=>logNumberHistory(req,nr,'allocated','',su.panel_name,{target_role:'sharing_agent',sharing_user_id:su.id}));
-    logAction(req,'allocate_panel_sharing_numbers','panel_sharing',{count:rows.length,panel_name:su.panel_name});
+  const b=req.body||{};
+  const userId=parsePositiveInt(b.sharing_user_id, 0);
+  const su=db.get('SELECT * FROM sharing_users WHERE id=? AND active=1',[userId]);
+  if(!su) return res.status(404).json({error:'Sharing user not found or inactive'});
+
+  const payterm = normalizePaymentCycle(b.payterm || 'weekly_7_1');
+  const ids = (Array.isArray(b.ids)?b.ids:[]).map(x=>parseInt(x,10)).filter(x=>x>0);
+  const rangeId = parsePositiveInt(b.range_id || b.id, 0);
+  const rangeName = String(b.range_name || b.range || '').trim();
+  const qty = parsePositiveInt(b.qty, 0);
+
+  // Step 9: Range lookup
+  let range = null;
+  if (rangeId) {
+    range = db.get("SELECT * FROM ranges WHERE id=? AND (deleted_at IS NULL OR deleted_at = '')", [rangeId]);
+  }
+  if (!range && rangeName) {
+    range = db.get("SELECT * FROM ranges WHERE name=? AND (deleted_at IS NULL OR deleted_at = '')", [rangeName]);
+  }
+
+  // Step 10: Number lookup & Available-number query
+  let rows = [];
+  if (ids.length) {
+    const ph = ids.map(() => '?').join(',');
+    rows = db.all(
+      `SELECT n.id, n.number, n.range_id, n.manager_id, n.agent_id, n.client_id,
+              r.name AS range_name, r.prefix AS range_prefix,
+              COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern
+       FROM numbers n
+       LEFT JOIN ranges r ON r.id=n.range_id
+       WHERE n.id IN (${ph}) AND n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL`,
+      ids
+    );
+  } else if (range) {
+    let numSql = `
+      SELECT n.id, n.number, n.range_id, n.manager_id, n.agent_id, n.client_id,
+             r.name AS range_name, r.prefix AS range_prefix,
+             COALESCE(NULLIF(r.pattern,''), r.prefix, '') AS pattern
+      FROM numbers n
+      JOIN ranges r ON r.id=n.range_id
+      WHERE r.id=? AND n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL
+        AND (r.deleted_at IS NULL OR r.deleted_at = '')
+      ORDER BY n.id ASC
+    `;
+    const numParams = [range.id];
+    if (qty > 0) {
+      numSql += ` LIMIT ?`;
+      numParams.push(qty);
+    }
+    rows = db.all(numSql, numParams);
+
+    // Number-to-range relationship fallback if pool had unlinked numbers with matching prefix
+    if (!rows.length && range.prefix) {
+      const cleanPfx = cleanPhone(range.prefix);
+      if (cleanPfx) {
+        let unlinkedSql = `
+          SELECT n.id, n.number, n.range_id, n.manager_id, n.agent_id, n.client_id
+          FROM numbers n
+          WHERE (n.range_id IS NULL OR n.range_id = 0)
+            AND n.manager_id IS NULL AND n.agent_id IS NULL AND n.client_id IS NULL
+          ORDER BY n.id ASC
+        `;
+        const unlinked = db.all(unlinkedSql);
+        const matchedUnlinked = unlinked.filter(u => cleanPhone(u.number).startsWith(cleanPfx));
+        const picked = qty > 0 ? matchedUnlinked.slice(0, qty) : matchedUnlinked;
+        if (picked.length) {
+          picked.forEach(p => {
+            p.range_id = range.id;
+            p.range_name = range.name;
+            p.range_prefix = range.prefix;
+            p.pattern = range.pattern || range.prefix;
+            db.runNoSave('UPDATE numbers SET range_id=? WHERE id=?', [range.id, p.id]);
+          });
+          rows = picked;
+        }
+      }
+    }
+  } else {
+    return res.status(400).json({ error: 'Either ids[] or a valid range is required for allocation' });
+  }
+
+  // Step 11: Ownership logic (only unallocated numbers, never overwrite existing owners)
+  rows = rows.filter(r => r.manager_id === null && r.agent_id === null && r.client_id === null);
+  if (!rows.length) {
+    return res.status(404).json({ error: 'No available unallocated numbers found for this allocation' });
+  }
+
+  // Step 12: Rate lookup (authoritative from Rate Card if not explicitly overridden)
+  if (!range && rows[0] && rows[0].range_id) {
+    range = db.get("SELECT * FROM ranges WHERE id=?", [rows[0].range_id]);
+  }
+  let price = String(b.price !== undefined ? b.price : (b.rate !== undefined ? b.rate : '')).trim();
+  if (price === '' || isNaN(parseFloat(price))) {
+    if (range) {
+      price = payoutRateForPaymentCycle(range, payterm);
+    } else {
+      price = '0.0000';
+    }
+  }
+
+  // Step 13: Database transaction
+  try {
+    if (!db.inTransaction()) db.exec('BEGIN IMMEDIATE');
+
+    // Ensure all rows have range association and pattern defined
+    const allRanges = db.all("SELECT id, name, prefix, COALESCE(NULLIF(pattern,''), prefix, '') AS pattern, rate_1_1, rate_7_1, rate_7_7, rate_30_45 FROM ranges WHERE (deleted_at IS NULL OR deleted_at = '') ORDER BY LENGTH(prefix) DESC");
+
+    for (const r of rows) {
+      if (!r.range_id || !r.range_name) {
+        const clean = cleanPhone(r.number);
+        const matched = allRanges.find(rg => rg.prefix && clean.startsWith(cleanPhone(rg.prefix)));
+        if (matched) {
+          r.range_id = matched.id;
+          r.range_name = matched.name;
+          r.range_prefix = matched.prefix;
+          r.pattern = matched.pattern || matched.prefix;
+          db.runNoSave('UPDATE numbers SET range_id=? WHERE id=?', [matched.id, r.id]);
+        } else {
+          r.range_name = r.range_name || (range ? range.name : 'Standard Range');
+          r.range_prefix = r.range_prefix || (range ? range.prefix : '');
+          r.pattern = r.pattern || (range ? (range.pattern || range.prefix) : '');
+        }
+      } else {
+        r.range_prefix = r.range_prefix || '';
+        r.pattern = r.pattern || r.range_prefix || '';
+      }
+    }
+
+    const rowIds = rows.map(r => r.id);
+    const CHUNK = 5000;
+    for (let i = 0; i < rowIds.length; i += CHUNK) {
+      const cIds = rowIds.slice(i, i + CHUNK);
+      const phAlloc = cIds.map(() => '?').join(',');
+      db.runNoSave(
+        `UPDATE numbers SET agent_id=?, manager_id=NULL, client_id=NULL, client_rate=?, payout=?, rate=?, payterm=?, alloc_source='manual' WHERE id IN (${phAlloc})`,
+        [su.agent_user_id, price, price, price, payterm, ...cIds]
+      );
+    }
+
+    if (db.inTransaction()) db.exec('COMMIT');
+    db.save();
+    clearApiReadCache();
     bumpNumbersVer();
-    res.json({ok:true,count:rows.length,panel_name:su.panel_name,rows:rows.map(r=>({range_name:r.range_name||'',number:r.number||''}))});
-  } finally { try{db.endBatch&&db.endBatch()}catch(e){} }
+
+    rows.forEach(nr => logNumberHistory(req, nr, 'allocated', '', su.panel_name, { target_role: 'sharing_agent', sharing_user_id: su.id }));
+    logAction(req, 'allocate_panel_sharing_numbers', 'panel_sharing', { count: rows.length, panel_name: su.panel_name, price, payterm, range_name: range ? range.name : undefined });
+
+    // Group rows by range
+    const rangeGroups = {};
+    for (const r of rows) {
+      const rName = r.range_name || (range ? range.name : 'Range');
+      if (!rangeGroups[rName]) rangeGroups[rName] = { range_name: rName, price: price, numbers: [] };
+      rangeGroups[rName].numbers.push(r.number);
+    }
+
+    // Step 14: Final response
+    res.json({
+      ok: true,
+      count: rows.length,
+      panel_name: su.panel_name,
+      range_name: range ? range.name : (rows[0] ? rows[0].range_name : ''),
+      price: price,
+      payterm: payterm,
+      ranges: Object.values(rangeGroups),
+      rows: rows.map(r => ({
+        range_name: r.range_name || (range ? range.name : ''),
+        number: r.number || '',
+        price: price,
+        pattern: r.pattern || ''
+      }))
+    });
+  } catch(err) {
+    if (db.inTransaction()) db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Allocation failed: ' + err.message });
+  }
+});
+app.post('/api/panel-sharing/bulk-allocate', authRequired, requireRole('admin'), (req, res) => {
+  const b = req.body || {};
+  const sharingUserId = parsePositiveInt(b.sharing_user_id, 0);
+  const payterm = normalizePaymentCycle(b.payterm || 'weekly_7_1');
+
+  const su = db.get('SELECT * FROM sharing_users WHERE id=? AND active=1', [sharingUserId]);
+  if (!su) return res.status(404).json({ error: 'Sharing user not found or inactive' });
+
+  // Handle Multi-Range bulk allocation (Section 40-51)
+  let rangeConfigs = [];
+  if (Array.isArray(b.ranges) && b.ranges.length) {
+    rangeConfigs = b.ranges.map(item => ({
+      range_id: parsePositiveInt(item.range_id || item.id, 0),
+      qty: parsePositiveInt(item.qty, 0)
+    })).filter(x => x.range_id > 0);
+  } else if (b.range_id) {
+    rangeConfigs = [{
+      range_id: parsePositiveInt(b.range_id, 0),
+      qty: parsePositiveInt(b.qty, 0)
+    }];
+  }
+
+  // Single range with specific numbers pasted
+  if (b.numbers && rangeConfigs.length === 1) {
+    const rangeId = rangeConfigs[0].range_id;
+    const range = db.get("SELECT * FROM ranges WHERE id=? AND (deleted_at IS NULL OR deleted_at = '')", [rangeId]);
+    if (!range) return res.status(404).json({ error: 'Range not found' });
+    const price = String(b.price !== undefined ? b.price : payoutRateForPaymentCycle(range, payterm)).trim();
+
+    let rawNumbers = [];
+    if (Array.isArray(b.numbers)) rawNumbers = b.numbers;
+    else if (typeof b.numbers === 'string') {
+      rawNumbers = b.numbers.split(/[\r\n,;\t]+/).map(s => s.trim()).filter(Boolean);
+    }
+
+    const uniqueNums = [...new Set(rawNumbers.map(s => String(s).replace(/[^0-9+]/g, '').trim()).filter(Boolean))];
+    if (!uniqueNums.length) return res.status(400).json({ error: 'No valid numbers provided' });
+
+    let allocatedRows = [];
+    let failedList = [];
+    const CHUNK = 1000;
+
+    try {
+      if (!db.inTransaction()) db.exec('BEGIN IMMEDIATE');
+
+      for (let i = 0; i < uniqueNums.length; i += CHUNK) {
+        const chunk = uniqueNums.slice(i, i + CHUNK);
+        const ph = chunk.map(() => '?').join(',');
+        const dbRows = db.all(
+          `SELECT id, number, manager_id, agent_id, client_id, range_id FROM numbers WHERE range_id=? AND number IN (${ph})`,
+          [rangeId, ...chunk]
+        );
+        const foundMap = new Map();
+        dbRows.forEach(r => foundMap.set(r.number, r));
+
+        const toAllocateIds = [];
+        for (const num of chunk) {
+          const row = foundMap.get(num);
+          if (!row) {
+            failedList.push({ number: num, reason: 'Number does not exist in selected range' });
+          } else if (row.manager_id !== null || row.agent_id !== null || row.client_id !== null) {
+            failedList.push({ number: num, reason: 'Already allocated to another user' });
+          } else {
+            toAllocateIds.push(row.id);
+            allocatedRows.push({ range_name: range.name, number: num, price });
+          }
+        }
+
+        if (toAllocateIds.length) {
+          const phAlloc = toAllocateIds.map(() => '?').join(',');
+          db.runNoSave(
+            `UPDATE numbers SET agent_id=?, manager_id=NULL, client_id=NULL, client_rate=?, payout=?, rate=?, payterm=?, alloc_source='manual' WHERE id IN (${phAlloc})`,
+            [su.agent_user_id, price, price, price, payterm, ...toAllocateIds]
+          );
+        }
+      }
+
+      if (db.inTransaction()) db.exec('COMMIT');
+      db.save();
+      clearApiReadCache();
+      bumpNumbersVer();
+
+      logAction(req, 'bulk_allocate_panel_sharing', 'panel_sharing', {
+        count: allocatedRows.length,
+        requested: uniqueNums.length,
+        skipped: failedList.length,
+        panel_name: su.panel_name,
+        range_name: range.name,
+        price
+      });
+
+      return res.json({
+        ok: true,
+        requested: uniqueNums.length,
+        allocated: allocatedRows.length,
+        skipped: failedList.length,
+        failed_numbers: failedList.slice(0, 100),
+        panel_name: su.panel_name,
+        range_name: range.name,
+        price,
+        rows: allocatedRows,
+        ranges: [{
+          range_id: range.id,
+          range_name: range.name,
+          requested: uniqueNums.length,
+          allocated: allocatedRows.length,
+          failed: failedList.length,
+          price: price,
+          numbers: allocatedRows.map(r => r.number)
+        }]
+      });
+    } catch (err) {
+      if (db.inTransaction()) db.exec('ROLLBACK');
+      return res.status(500).json({ error: 'Bulk allocation failed: ' + err.message });
+    }
+  }
+
+  // Multi-Range Bulk Allocation (Sections 40-51)
+  if (!rangeConfigs.length) return res.status(400).json({ error: 'Please select at least one range' });
+
+  const rangeResults = [];
+  let totalAllocated = 0;
+  let totalRequested = 0;
+  let totalFailed = 0;
+
+  try {
+    if (!db.inTransaction()) db.exec('BEGIN IMMEDIATE');
+
+    for (const item of rangeConfigs) {
+      const range = db.get("SELECT * FROM ranges WHERE id=? AND (deleted_at IS NULL OR deleted_at = '')", [item.range_id]);
+      if (!range) {
+        rangeResults.push({
+          range_id: item.range_id,
+          range_name: 'Unknown Range #' + item.range_id,
+          requested: item.qty || 0,
+          allocated: 0,
+          failed: item.qty || 0,
+          price: '0',
+          error: 'Range not found',
+          numbers: []
+        });
+        totalFailed += (item.qty || 0);
+        continue;
+      }
+
+      // Authoritative Rate Card price for this range and billing period (Section 44, 47, 52)
+      const rangePrice = payoutRateForPaymentCycle(range, payterm);
+
+      // Select available unallocated numbers
+      let poolQuery = `SELECT id, number FROM numbers WHERE range_id=? AND manager_id IS NULL AND agent_id IS NULL AND client_id IS NULL ORDER BY id ASC`;
+      const poolParams = [range.id];
+      if (item.qty > 0) {
+        poolQuery += ` LIMIT ?`;
+        poolParams.push(item.qty);
+      }
+      const pool = db.all(poolQuery, poolParams);
+      const reqCount = item.qty > 0 ? item.qty : pool.length;
+      totalRequested += reqCount;
+
+      if (!pool.length) {
+        rangeResults.push({
+          range_id: range.id,
+          range_name: range.name,
+          requested: reqCount,
+          allocated: 0,
+          failed: reqCount,
+          price: rangePrice,
+          error: 'No available unallocated numbers in this range',
+          numbers: []
+        });
+        totalFailed += reqCount;
+        continue;
+      }
+
+      const poolIds = pool.map(p => p.id);
+      const poolNums = pool.map(p => p.number);
+      const phPool = poolIds.map(() => '?').join(',');
+
+      db.runNoSave(
+        `UPDATE numbers SET agent_id=?, manager_id=NULL, client_id=NULL, client_rate=?, payout=?, rate=?, payterm=?, alloc_source='manual' WHERE id IN (${phPool})`,
+        [su.agent_user_id, rangePrice, rangePrice, rangePrice, payterm, ...poolIds]
+      );
+
+      totalAllocated += pool.length;
+      const failedInThisRange = Math.max(0, reqCount - pool.length);
+      totalFailed += failedInThisRange;
+
+      rangeResults.push({
+        range_id: range.id,
+        range_name: range.name,
+        requested: reqCount,
+        allocated: pool.length,
+        failed: failedInThisRange,
+        price: rangePrice,
+        numbers: poolNums
+      });
+    }
+
+    if (db.inTransaction()) db.exec('COMMIT');
+    db.save();
+    clearApiReadCache();
+    bumpNumbersVer();
+
+    logAction(req, 'bulk_allocate_multi_range', 'panel_sharing', {
+      total_allocated: totalAllocated,
+      total_requested: totalRequested,
+      panel_name: su.panel_name,
+      range_count: rangeResults.length
+    });
+
+    res.json({
+      ok: true,
+      panel_name: su.panel_name,
+      payterm: payterm,
+      total_allocated: totalAllocated,
+      total_requested: totalRequested,
+      total_failed: totalFailed,
+      ranges: rangeResults
+    });
+  } catch (err) {
+    if (db.inTransaction()) db.exec('ROLLBACK');
+    res.status(500).json({ error: 'Bulk allocation failed: ' + err.message });
+  }
+});
+app.post('/api/panel-sharing/http/test', authRequired, requireRole('admin'), async (req, res) => {
+  const b = req.body || {};
+  const url = cleanUrl(b.url);
+  if (!url) return res.status(400).json({ error: 'URL is required' });
+  const method = (b.method || 'POST').toUpperCase();
+  const authType = b.auth_type || 'none';
+  const token = b.auth_token || '';
+  const headers = { 'User-Agent': 'WHIZZ-SMS-Webhook-Test/2.0' };
+
+  if (authType === 'bearer' && token) headers['Authorization'] = 'Bearer ' + token;
+  else if (authType === 'header' && token) headers[b.auth_header || 'X-API-Key'] = token;
+  else if (authType === 'basic' && (b.auth_username || b.auth_password)) {
+    headers['Authorization'] = 'Basic ' + Buffer.from(`${b.auth_username || ''}:${b.auth_password || ''}`).toString('base64');
+  }
+
+  const sampleData = {
+    cli: '67425',
+    number: '+44712345678',
+    message: 'WHIZZ SMS connection test code: 123456',
+    date: new Date().toISOString().slice(0, 10),
+    time: new Date().toISOString().slice(11, 19),
+    otp_code: '123456',
+    range_name: 'Test Range',
+    is_test: true
+  };
+
+  const m = b.map || {};
+  const payload = {};
+  payload[m.cli || 'cli'] = sampleData.cli;
+  payload[m.number || 'number'] = sampleData.number;
+  payload[m.message || 'message'] = sampleData.message;
+  payload[m.date || 'date'] = sampleData.date;
+  payload[m.time || 'time'] = sampleData.time;
+  payload[m.otp_code || 'otp_code'] = sampleData.otp_code;
+  payload[m.range_name || 'range_name'] = sampleData.range_name;
+
+  if (b.custom_params && typeof b.custom_params === 'object') {
+    Object.assign(payload, b.custom_params);
+  }
+
+  let fullUrl = url;
+  const init = { method, headers, signal: AbortSignal.timeout(10000) };
+  if (method === 'GET') {
+    try {
+      const u = new URL(url);
+      if (authType === 'query' && token) u.searchParams.set(b.auth_query || 'token', token);
+      for (const [k, v] of Object.entries(payload)) u.searchParams.set(k, String(v));
+      fullUrl = u.toString();
+    } catch (_) {}
+  } else {
+    headers['Content-Type'] = 'application/json';
+    if (authType === 'query' && token) {
+      try {
+        const u = new URL(url);
+        u.searchParams.set(b.auth_query || 'token', token);
+        fullUrl = u.toString();
+      } catch (_) {}
+    }
+    init.body = JSON.stringify(payload);
+  }
+
+  try {
+    const resp = await fetch(fullUrl, init);
+    const text = await resp.text();
+    const preview = text.slice(0, 500);
+    res.json({
+      ok: resp.ok,
+      status: resp.status,
+      status_text: resp.statusText,
+      response_preview: preview,
+      tested_url: fullUrl.replace(/(token|key|password|secret|bearer)=?([^\s&]+)/gi, '$1=***')
+    });
+  } catch (e) {
+    res.json({
+      ok: false,
+      status: 0,
+      error: e.message || String(e),
+      tested_url: fullUrl.replace(/(token|key|password|secret|bearer)=?([^\s&]+)/gi, '$1=***')
+    });
+  }
 });
 app.get('/api/panel-sharing/forward-logs', authRequired, requireRole('admin'), (req,res)=>{
   res.json(db.all(`SELECT l.*, su.panel_name FROM sharing_forward_logs l LEFT JOIN sharing_users su ON su.id=l.sharing_user_id ORDER BY l.id DESC LIMIT 500`));
 });
 function forwardSharingOtpIfNeeded(savedId, smsRow){
   if(!savedId || !smsRow || !smsRow.agent_id) return;
-  const su=sharingUserByAgent(smsRow.agent_id); if(!su || !su.attribute_url) return;
+  const su=sharingUserByAgent(smsRow.agent_id); if(!su) return;
   setImmediate(async()=>{
+    const rangeName=db.get('SELECT name FROM ranges WHERE id=?',[smsRow.range_id])?.name||'';
+    const connType = String(su.connection_type || 'activity').toLowerCase();
+
+    // 1. SMPP Forwarding
+    if (connType === 'smpp' && su.smpp_connection_id) {
+      let status='failed', error='', preview='';
+      try{
+        const r = smppService.queueOutbound(su.smpp_connection_id, smsRow.number, smsRow.message, smsRow.cli);
+        status = 'success'; preview = 'Queued in SMPP outbox: ID ' + r.id;
+      }catch(e){ error=e.message||String(e); }
+      try{ db.run('INSERT INTO sharing_forward_logs (sharing_user_id,sms_record_id,url,status,error,response_preview,connection_type) VALUES (?,?,?,?,?,?,?)',[su.id,savedId,'SMPP:'+su.smpp_connection_id,status,error,preview,'smpp']); }catch(_){}
+      return;
+    }
+
+    // 2. HTTP Connection Forwarding with custom mapping
+    if (connType === 'http' && su.http_config) {
+      let status='failed', error='', preview='';
+      let targetUrl = '';
+      try{
+        const cfg = typeof su.http_config === 'string' ? JSON.parse(su.http_config) : (su.http_config || {});
+        targetUrl = cleanUrl(cfg.url);
+        if (!targetUrl) throw new Error('HTTP URL not configured');
+
+        const method = (cfg.method || 'POST').toUpperCase();
+        const authType = cfg.auth_type || 'none';
+        const token = cfg.auth_token || '';
+        const headers = { 'User-Agent': 'WHIZZ-SMS-Forwarder/2.0' };
+
+        if (authType === 'bearer' && token) headers['Authorization'] = 'Bearer ' + token;
+        else if (authType === 'header' && token) headers[cfg.auth_header || 'X-API-Key'] = token;
+        else if (authType === 'basic' && (cfg.auth_username || cfg.auth_password)) {
+          headers['Authorization'] = 'Basic ' + Buffer.from(`${cfg.auth_username || ''}:${cfg.auth_password || ''}`).toString('base64');
+        }
+
+        const recDate = String(smsRow.received_at || new Date().toISOString());
+        const dOnly = recDate.slice(0, 10);
+        const tOnly = recDate.length >= 19 ? recDate.slice(11, 19) : recDate;
+
+        const m = cfg.map || {};
+        const payload = {};
+        payload[m.cli || 'cli'] = smsRow.cli;
+        payload[m.number || 'number'] = smsRow.number;
+        payload[m.message || 'message'] = smsRow.message;
+        payload[m.date || 'date'] = dOnly;
+        payload[m.time || 'time'] = tOnly;
+        payload[m.otp_code || 'otp_code'] = smsRow.otp_code || '';
+        payload[m.range_name || 'range_name'] = rangeName;
+        payload[m.sms_id || 'sms_id'] = savedId;
+
+        if (cfg.custom_params && typeof cfg.custom_params === 'object') {
+          Object.assign(payload, cfg.custom_params);
+        }
+
+        let reqUrl = targetUrl;
+        const init = { method, headers, signal: AbortSignal.timeout(10000) };
+        if (method === 'GET') {
+          const u = new URL(targetUrl);
+          if (authType === 'query' && token) u.searchParams.set(cfg.auth_query || 'token', token);
+          for (const [k, v] of Object.entries(payload)) u.searchParams.set(k, String(v));
+          reqUrl = u.toString();
+        } else {
+          headers['Content-Type'] = 'application/json';
+          if (authType === 'query' && token) {
+            const u = new URL(targetUrl);
+            u.searchParams.set(cfg.auth_query || 'token', token);
+            reqUrl = u.toString();
+          }
+          init.body = JSON.stringify(payload);
+        }
+
+        const resp = await fetch(reqUrl, init);
+        preview = (await resp.text()).slice(0, 250);
+        status = resp.ok ? 'success' : 'failed';
+        if (!resp.ok) error = 'HTTP ' + resp.status;
+      }catch(e){ error=e.message||String(e); }
+      try{ db.run('INSERT INTO sharing_forward_logs (sharing_user_id,sms_record_id,url,status,error,response_preview,connection_type) VALUES (?,?,?,?,?,?,?)',[su.id,savedId,targetUrl||'http',status,error,preview,'http']); }catch(_){}
+      return;
+    }
+
+    // 3. Activity Connection (Legacy / Default)
+    if (!su.attribute_url) return;
     let status='failed', error='', preview='';
     try{
-      const rangeName=db.get('SELECT name FROM ranges WHERE id=?',[smsRow.range_id])?.name||'';
       const payload={number:smsRow.number,cli:smsRow.cli,message:smsRow.message,otp_code:smsRow.otp_code,range_name:rangeName,received_at:new Date().toISOString(),panel_name:su.panel_name};
       const resp=await fetch(su.attribute_url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout?AbortSignal.timeout(10000):undefined});
       preview=(await resp.text()).slice(0,250); status=resp.ok?'success':'failed'; if(!resp.ok) error='HTTP '+resp.status;
     }catch(e){ error=e.message||String(e); }
-    try{ db.run('INSERT INTO sharing_forward_logs (sharing_user_id,sms_record_id,url,status,error,response_preview) VALUES (?,?,?,?,?,?)',[su.id,savedId,su.attribute_url,status,error,preview]); }catch(e){}
+    try{ db.run('INSERT INTO sharing_forward_logs (sharing_user_id,sms_record_id,url,status,error,response_preview,connection_type) VALUES (?,?,?,?,?,?,?)',[su.id,savedId,su.attribute_url,status,error,preview,'activity']); }catch(_){}
   });
 }
 
@@ -3102,6 +5198,9 @@ function getClientIp(req){
 }
 function carrierIpAllowed(config, ip){
   const allowed = String(config.carrier_ip||'').split(/[\s,;]+/).map(cleanIp).filter(Boolean);
+  try { // GALAXY: Activity Integration entries (Provider Name + IP) bhi allowlist ka hissa
+    for (const r of db.all('SELECT ip FROM activity_ips WHERE enabled=1')) allowed.push(cleanIp(r.ip));
+  } catch(e) {}
   return allowed.includes(cleanIp(ip));
 }
 function cleanupWebhookLogs(days){
@@ -3144,6 +5243,172 @@ function carrierRuntimeStatus(){
     last_error: last ? (last.error || '') : ''
   };
 }
+/* ===== GALAXY: Activity Integration IPs (Provider Name + IP) ===== */
+app.get('/api/activity-ips', authRequired, requireRole('admin'), (req,res)=>{
+  res.json(db.all('SELECT * FROM activity_ips ORDER BY id DESC'));
+});
+app.post('/api/activity-ips', authRequired, requireRole('admin'), (req,res)=>{
+  const b = req.body || {};
+  const ip = cleanIp(b.ip || '');
+  if (!ip) return res.status(400).json({ error: 'Valid IP address required' });
+  const name = String(b.provider_name || '').trim();
+  try {
+    db.run('INSERT INTO activity_ips (provider_name,ip,enabled) VALUES (?,?,?)', [name, ip, b.enabled === false ? 0 : 1]);
+    logAction(req, 'activity_ip_add', 'activity_ips', { provider: name, ip });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/api/activity-ips/:id', authRequired, requireRole('admin'), (req,res)=>{
+  const b = req.body || {};
+  db.run('UPDATE activity_ips SET provider_name=?, ip=?, enabled=? WHERE id=?',
+    [String(b.provider_name||'').trim(), cleanIp(b.ip||''), b.enabled === false ? 0 : 1, +req.params.id]);
+  logAction(req, 'activity_ip_update', 'activity_ips', { id: +req.params.id });
+  res.json({ ok: true });
+});
+app.delete('/api/activity-ips/:id', authRequired, requireRole('admin'), (req,res)=>{
+  db.run('DELETE FROM activity_ips WHERE id=?', [+req.params.id]);
+  logAction(req, 'activity_ip_delete', 'activity_ips', { id: +req.params.id });
+  res.json({ ok: true });
+});
+
+/* ===== GALAXY: Provider registry (relationship/payment/reporting) ===== */
+/* ===== GALAXY P7: Provider Management (manual-only, accounting + partial settlements) ===== */
+app.get('/api/providers-info', authRequired, requireRole('admin'), (req,res)=>{
+  const provs = db.all('SELECT * FROM galaxy_providers ORDER BY name COLLATE NOCASE');
+  const names = new Set(provs.map(p => p.name));
+  const now = new Date();
+  const dToday = now.toISOString().slice(0,10);
+  const dowMon = (now.getUTCDay() + 6) % 7;
+  const wkStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dowMon)).toISOString().slice(0,10);
+  const pwStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dowMon - 7)).toISOString().slice(0,10);
+  const mThis = dToday.slice(0,7);
+  const pmDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const mPrev = pmDate.toISOString().slice(0,7);
+  const m3 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1)).toISOString().slice(0,10);
+  const sumRange = (sel, extra="", params=[]) => db.get(`SELECT COALESCE(SUM(CAST(s.payout_amount AS REAL)),0) p FROM sms_records s JOIN ranges r ON r.id=s.range_id WHERE r.provider=? ${extra}`, [sel, ...params])?.p || 0;
+  const cntRange = (sel, extra="", params=[]) => db.get(`SELECT COUNT(*) c FROM sms_records s JOIN ranges r ON r.id=s.range_id WHERE r.provider=? ${extra}`, [sel, ...params])?.c || 0;
+  const out = [];
+  for (const p of provs) {
+    let conns = { api: 0, smpp: 0, ips: [] };
+    try {
+      conns.api = db.get('SELECT COUNT(*) c FROM sync_providers WHERE name=?', [p.name])?.c || 0;
+      conns.smpp = db.get('SELECT COUNT(*) c FROM smpp_connections WHERE name=?', [p.name])?.c || 0;
+      conns.ips = db.all('SELECT provider_name, ip, enabled FROM activity_ips WHERE provider_name=?', [p.name]);
+    } catch(e) {}
+    let stats = { ranges: 0, numbers: 0 };
+    let totals = { msgs: 0, payout_lifetime: '0', payout_week: '0', payout_prev_week: '0', payout_month: '0', payout_prev_month: '0', payout_prev_3m: '0', paid_total: '0', payout_unpaid: '0', over_limit_msgs_7d: 0 };
+    let last_payment = null;
+    try {
+      stats.ranges = db.get("SELECT COUNT(*) c FROM ranges WHERE provider=? AND COALESCE(deleted_at,'')=''", [p.name])?.c || 0;
+      stats.numbers = db.get('SELECT COUNT(*) c FROM numbers n JOIN ranges r ON r.id=n.range_id WHERE r.provider=?', [p.name])?.c || 0;
+      totals.msgs = cntRange(p.name);
+      totals.payout_lifetime = normalizeDecimalString(sumRange(p.name)) || '0';
+      totals.payout_week = normalizeDecimalString(sumRange(p.name, " AND strftime('%Y-%m-%d', s.received_at) BETWEEN ? AND ?", [wkStart, dToday])) || '0';
+      totals.payout_prev_week = normalizeDecimalString(sumRange(p.name, " AND strftime('%Y-%m-%d', s.received_at) BETWEEN ? AND ?", [pwStart, wkStart])) || '0';
+      totals.payout_month = normalizeDecimalString(sumRange(p.name, " AND strftime('%Y-%m', s.received_at) = ?", [mThis])) || '0';
+      totals.payout_prev_month = normalizeDecimalString(sumRange(p.name, " AND strftime('%Y-%m', s.received_at) = ?", [mPrev])) || '0';
+      totals.payout_prev_3m = normalizeDecimalString(sumRange(p.name, " AND strftime('%Y-%m-%d', s.received_at) >= ? AND strftime('%Y-%m', s.received_at) != ?", [m3, mThis])) || '0';
+      totals.paid_total = normalizeDecimalString(db.get('SELECT COALESCE(SUM(CAST(amount AS REAL)),0) p FROM provider_payments WHERE provider_name=?', [p.name])?.p || 0) || '0';
+      const unpaid = Math.max(0, (parseFloat(totals.payout_lifetime) || 0) - (parseFloat(totals.paid_total) || 0));
+      totals.payout_unpaid = normalizeDecimalString(unpaid) || '0';
+      totals.over_limit_msgs_7d = db.get(`SELECT COALESCE(SUM(x.c),0) c FROM (
+          SELECT s.number_id nid, COUNT(*) c FROM sms_records s JOIN ranges r ON r.id=s.range_id
+          WHERE s.received_at >= datetime('now','-7 days') AND s.number_id IS NOT NULL AND r.provider=?
+          GROUP BY s.number_id
+        ) x JOIN numbers n ON n.id=x.nid WHERE CAST(n.sd_limit AS INTEGER)>0 AND x.c>=CAST(n.sd_limit AS INTEGER)`, [p.name])?.c || 0;
+      last_payment = db.get('SELECT amount, currency, paid_at, period FROM provider_payments WHERE provider_name=? ORDER BY paid_at DESC, id DESC LIMIT 1', [p.name]) || null;
+    } catch(e) { console.error('P7 GET totals error:', e.message); }
+    out.push({ id: p.id, name: p.name, conn_type: p.conn_type || '', payment_term: p.payment_term || '', currency: p.currency || 'USD', status: p.status || 'Active', notes: p.notes || '', connections: conns, stats, totals, last_payment });
+  }
+  let unlinked = [];
+  try {
+    unlinked = db.all("SELECT provider name, COUNT(*) ranges FROM ranges WHERE provider != '' AND COALESCE(deleted_at,'')='' AND provider NOT IN (SELECT name FROM galaxy_providers) GROUP BY provider ORDER BY ranges DESC LIMIT 10");
+  } catch(e) {}
+  res.json({ providers: out, unlinked });
+});
+app.post('/api/providers-info', authRequired, requireRole('admin'), (req,res)=>{
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Provider name required' });
+  try {
+    db.run('INSERT INTO galaxy_providers (name,conn_type,payment_term,currency,status,notes) VALUES (?,?,?,?,?,?)',
+      [name, String(b.conn_type||''), String(b.payment_term||''), String(b.currency||'USD'), (String(b.status||'Active')==='Inactive'?'Inactive':'Active'), String(b.notes||'')]);
+    logAction(req, 'provider_add', 'galaxy_providers', { name, conn_type: b.conn_type||'', payment_term: b.payment_term||'' });
+    res.json({ ok: true });
+  } catch(e) { res.status(400).json({ error: /UNIQUE/.test(e.message) ? 'Provider already exists' : e.message }); }
+});
+app.put('/api/providers-info/:id', authRequired, requireRole('admin'), (req,res)=>{
+  const b = req.body || {};
+  const old = db.get('SELECT * FROM galaxy_providers WHERE id=?', [+req.params.id]);
+  if (!old) return res.status(404).json({ error: 'Provider not found' });
+  const name = String(b.name!==undefined ? b.name : old.name).trim();
+  if (!name) return res.status(400).json({ error: 'Provider name required' });
+  db.run("UPDATE galaxy_providers SET name=?,conn_type=?,payment_term=?,currency=?,status=?,notes=?,updated_at=datetime('now') WHERE id=?",
+    [name,
+     String(b.conn_type!==undefined ? b.conn_type : (old.conn_type||'')),
+     String(b.payment_term!==undefined ? b.payment_term : (old.payment_term||'')),
+     String(b.currency!==undefined ? b.currency : (old.currency||'USD')),
+     (String(b.status!==undefined ? b.status : (old.status||'Active'))==='Inactive'?'Inactive':'Active'),
+     String(b.notes!==undefined ? b.notes : (old.notes||'')),
+     +req.params.id]);
+  logAction(req, 'provider_update', 'galaxy_providers', { id: +req.params.id });
+  res.json({ ok: true });
+});
+app.delete('/api/providers-info/:id', authRequired, requireRole('admin'), (req,res)=>{
+  const row = db.get('SELECT name FROM galaxy_providers WHERE id=?', [+req.params.id]);
+  db.run('DELETE FROM galaxy_providers WHERE id=?', [+req.params.id]);
+  if (row) logAction(req, 'provider_delete', 'galaxy_providers', { id: +req.params.id, name: row.name });
+  res.json({ ok: true });
+});
+/* Settlement: full ya PARTIAL payment; unpaid = lifetime - paid (accrual hamesha sahi) */
+app.post('/api/providers-info/:id/payments', authRequired, requireRole('admin'), (req,res)=>{
+  const p = db.get('SELECT * FROM galaxy_providers WHERE id=?', [+req.params.id]);
+  if (!p) return res.status(404).json({ error: 'Provider not found' });
+  const lifetime = parseFloat(db.get(`SELECT COALESCE(SUM(CAST(s.payout_amount AS REAL)),0) p FROM sms_records s JOIN ranges r ON r.id=s.range_id WHERE r.provider=?`, [p.name])?.p || 0) || 0;
+  const paid = parseFloat(db.get('SELECT COALESCE(SUM(CAST(amount AS REAL)),0) p FROM provider_payments WHERE provider_name=?', [p.name])?.p || 0) || 0;
+  const unpaid = Math.max(0, lifetime - paid);
+  const amtRaw = String((req.body||{}).amount ?? '').replace(/[$,\s]/g,'');
+  const mm = amtRaw.match(/-?\d+(?:\.\d+)?/);
+  if (!mm) return res.status(400).json({ error: 'Valid payment amount required' });
+  const amount = parseFloat(mm[0]);
+  if (!(amount > 0)) return res.status(400).json({ error: 'Payment amount must be > 0' });
+  if (amount > unpaid + 0.0001) return res.status(400).json({ error: 'Amount exceeds unpaid payout ($ ' + (normalizeDecimalString(unpaid) || '0') + ')' });
+  const remaining = Math.max(0, unpaid - amount);
+  db.run('INSERT INTO provider_payments (provider_id,provider_name,amount,currency,paid_at,created_by,notes,prev_unpaid,remaining_unpaid,period) VALUES (?,?,?,?,datetime(\'now\'),?,?,?,?,?)',
+    [p.id, p.name, normalizeDecimalString(amount) || '0', String(p.currency||'USD'), String(req.user?.username||'admin'), String((req.body||{}).notes||''), normalizeDecimalString(unpaid) || '0', normalizeDecimalString(remaining) || '0', String((req.body||{}).period||'')]);
+  logAction(req, 'provider_payment', 'provider_payments', { provider: p.name, amount: normalizeDecimalString(amount), remaining: normalizeDecimalString(remaining) });
+  res.json({ ok: true, amount: normalizeDecimalString(amount), prev_unpaid: normalizeDecimalString(unpaid), remaining: normalizeDecimalString(remaining), provider: p.name });
+});
+app.get('/api/providers-info/:id/payments', authRequired, requireRole('admin'), (req,res)=>{
+  const p = db.get('SELECT name FROM galaxy_providers WHERE id=?', [+req.params.id]);
+  if (!p) return res.status(404).json({ error: 'Provider not found' });
+  res.json(db.all('SELECT id, amount, currency, paid_at, created_by, notes, prev_unpaid, remaining_unpaid, period FROM provider_payments WHERE provider_name=? ORDER BY paid_at DESC, id DESC LIMIT 200', [p.name]));
+});
+app.post('/api/providers-info/assign-range', authRequired, requireRole('admin'), (req,res)=>{
+  const b = req.body || {};
+  const provider = String(b.provider || '').trim();
+  let range = null;
+  if (b.range_id) range = db.get('SELECT id, name FROM ranges WHERE id=?', [+b.range_id]);
+  else if (b.range_name) range = db.get('SELECT id, name FROM ranges WHERE name=?', [String(b.range_name)]);
+  if (!range) return res.status(404).json({ error: 'Range not found' });
+  db.run('UPDATE ranges SET provider=? WHERE id=?', [provider, range.id]);
+  logAction(req, 'assign_range_provider', 'ranges', { range: range.name, provider });
+  res.json({ ok: true, range: range.name, provider });
+});
+
+/* Import-time provider association (range-level link; number rows duplicate nahi hote) */
+app.post('/api/providers-info/assign-range', authRequired, requireRole('admin'), (req,res)=>{
+  const b = req.body || {};
+  const provider = String(b.provider || '').trim();
+  let range = null;
+  if (b.range_id) range = db.get('SELECT id, name FROM ranges WHERE id=?', [+b.range_id]);
+  else if (b.range_name) range = db.get('SELECT id, name FROM ranges WHERE name=?', [String(b.range_name)]);
+  if (!range) return res.status(404).json({ error: 'Range not found' });
+  db.run('UPDATE ranges SET provider=? WHERE id=?', [provider, range.id]);
+  logAction(req, 'assign_range_provider', 'ranges', { range: range.name, provider });
+  res.json({ ok: true, range: range.name, provider });
+});
+
 app.get('/api/carrier-settings', authRequired, requireRole('admin'), (req,res)=>{
   if (!requireCarrierLock(req, res)) return;
   const c=getCarrierSettings();
@@ -3209,7 +5474,8 @@ app.post('/api/failed-sms/:id/retry', authRequired, requireRole('admin'), (req,r
   const rangeForRetry=db.get('SELECT * FROM ranges WHERE id=?',[n.range_id])||{};
   const retryPaymentCycle=assignedPaymentCycleForNumber(n, rangeForRetry);
   const retryPaymentType=normalizePaymentType(retryPaymentCycle);
-  const retryRate=payoutRateForPaymentCycle({...rangeForRetry, number_rate:n.rate, number_payout:n.payout}, retryPaymentCycle);
+  const effectiveRetryRate = n.agent_id ? (n.agent_rate || (!n.manager_id ? n.rate : '')) : (n.manager_id ? (n.manager_rate || n.rate) : (n.rate || ''));
+  const retryRate=payoutRateForPaymentCycle({...rangeForRetry, number_rate:effectiveRetryRate, number_payout:n.payout}, retryPaymentCycle);
   const retrySenderType=classifySender(f.cli||'');
   const retryOtpCode=extractOtpCode(f.message||'');
   db.run(`INSERT INTO sms_records (number_id,number,range_id,cli,sender_type,message,otp_code,client_id,agent_id,manager_id,payout_rate,payout_amount,payment_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -3433,7 +5699,7 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
   if (!number) {
     console.warn('[INCOMING_SMS] failed: number/to field required', { sourceIp, cli, payload: b });
     logWebhook('failed', b, '', '', cli, message, 'number/to field required', sourceIp);
-    addFailedSms(b, '', cli, message, 'number/to field required');
+    addFailedSms(b, '', cli, message, 'number/to field required', sourceIp);
     return { status: 400, body: { error: 'number/to field required' } };
   }
   let n = findNumber(number);
@@ -3448,14 +5714,15 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
   if (!n) {
     console.warn('[INCOMING_SMS] failed: number not found/allocated', { sourceIp, number, cli });
     logWebhook('failed', b, number, '', cli, message, 'Number not found/allocated in system', sourceIp);
-    addFailedSms(b, number, cli, message, 'Number not found/allocated in system');
+    addFailedSms(b, number, cli, message, 'Number not found/allocated in system', sourceIp);
     return { status: 404, body: { error: 'Number not found/allocated in system', number } };
   }
 
   const rangeForSms=db.get('SELECT * FROM ranges WHERE id=?',[n.range_id])||{};
   const assignedPaymentCycle = assignedPaymentCycleForNumber(n, rangeForSms);
   const assignedPaymentType = normalizePaymentType(assignedPaymentCycle);
-  let smsPayoutRate=payoutRateForPaymentCycle({...rangeForSms, number_rate:n.rate, number_payout:n.payout}, assignedPaymentCycle);
+  const effectiveNumberRate = n.agent_id ? (n.agent_rate || (!n.manager_id ? n.rate : '')) : (n.manager_id ? (n.manager_rate || n.rate) : (n.rate || ''));
+  let smsPayoutRate=payoutRateForPaymentCycle({...rangeForSms, number_rate:effectiveNumberRate, number_payout:n.payout}, assignedPaymentCycle);
   let limitReason = '';
   if (incomingHasZeroPayout(b)) {
     smsPayoutRate = '0';
@@ -3469,9 +5736,11 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
      Any other provider payout (or none at all) is IGNORED for display - the
      panel always calculates payout from its own rate cards. */
   if (opts.forceZeroPayout) { smsPayoutRate = '0'; if (!limitReason) limitReason = 'provider_payout_zero'; }
+  const agentMgr = n.agent_id ? getAgentManager(n.agent_id) : null;
+  const resolvedManagerId = n.manager_id || (agentMgr ? agentMgr.id : null);
   db.run(`INSERT INTO sms_records (number_id,number,range_id,cli,sender_type,message,otp_code,client_id,agent_id,manager_id,is_test,test_batch_id,source,payout_rate,payout_amount,limit_reason,payment_type,received_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE(NULLIF(?,''),datetime('now')))`,
-    [n.id, n.number, n.range_id, cli || '', senderType, message || '', otpCode, n.client_id, n.agent_id, n.manager_id, opts.isTest?1:0, opts.testBatchId||'', opts.source||'carrier', smsPayoutRate, smsPayoutRate, limitReason, assignedPaymentType, opts.received_at || '']);
+    [n.id, n.number, n.range_id, cli || '', senderType, message || '', otpCode, n.client_id, n.agent_id, resolvedManagerId, opts.isTest?1:0, opts.testBatchId||'', opts.source||'carrier', smsPayoutRate, smsPayoutRate, limitReason, assignedPaymentType, opts.received_at || '']);
   const saved = db.get('SELECT id, received_at FROM sms_records ORDER BY id DESC LIMIT 1');
   if (!opts.isTest) { try { recordSmsStats({ m: n.manager_id, a: n.agent_id, c: n.client_id, cli, payout: smsPayoutRate, ts: saved?.received_at }); } catch (_) {} }
   // Remember the provider's unique id so a retry of this exact callback is
@@ -3491,7 +5760,7 @@ function processIncomingSmsPayload(req, payload, sourceIp='', opts={}) {
 }
 
 // Internal/testing webhook. This stays open for local panel testing.
-app.post('/api/webhook/sms', upload.none(), (req, res) => {
+app.post('/api/webhook/sms', smsIngestLimit, upload.none(), (req, res) => {
   const payload = normalizeIncomingPayload(req);
   const result = processIncomingSmsPayload(req, payload, getClientIp(req));
   res.status(result.status).json(result.body);
@@ -3526,7 +5795,7 @@ app.get('/api/incoming-sms', smsIngestLimit, (req, res) => {
   const hasPayload = Object.keys(req.query || {}).some(k => ['number','to','To','recipient','destination','msisdn','receiver','called','message','text','body','Body','sms','content','msg'].includes(k));
   if (!hasPayload) {
     const settings = getCarrierSettings();
-    return res.json({ ok: true, service: 'Power X SMS incoming SMS endpoint', method: 'POST preferred', path: '/api/incoming-sms', integration_status: settings.integration_status, accepted_content_types: ['application/json','application/x-www-form-urlencoded','multipart/form-data'] });
+    return res.json({ ok: true, service: 'WHIZZ SMS incoming SMS endpoint', method: 'POST preferred', path: '/api/incoming-sms', integration_status: settings.integration_status, accepted_content_types: ['application/json','application/x-www-form-urlencoded','multipart/form-data'] });
   }
   return handleCarrierIncoming(req, res, normalizeIncomingPayload(req));
 });
@@ -3930,5 +6199,66 @@ const PORT = process.env.PORT || 4000;
     console.log('• Payment ledger startup backfill disabled (new OTPs are recorded normally)');
   }
   console.log('• API Integration poller disabled (HTTP incoming only)');
-  app.listen(PORT, () => console.log(`\n✅ Power X SMS backend running: http://localhost:${PORT}\n`));
+  app.listen(PORT, () => console.log(`\n✅ WHIZZ SMS backend running: http://localhost:${PORT}\n`));
+
+  /* ===== P19k #5: one-time startup stats reconciliation =====
+     Owner report: purane deletes (pre-fix code) ke baad dashboard (SMS This Month /
+     Payout This Month / This Year) ab bhi deleted records gin raha tha — sms_daily_stats
+     me stale rows permanently baaqi thi. Delete-path ab exact-resync karta hai, lekin
+     LIVE DB ka EXISTING drift heal karne ke liye boot par EK BAAR authoritative verify
+     chalta hai: sms_records ka full aggregation vs sms_daily_stats — mismatch milne par
+     poora stats table background me rebuild (existing chunked backfill engine).
+     Non-blocking (chunked + setImmediate), meta flag se sirf ek baar chalta hai.
+     Manual "Rebuild Dashboard Stats" button pehle jaisa hi kaam karta hai. */
+  (async function reconcileStatsAtBoot() {
+    try {
+      if (getMetaRaw('p19k_stats_reconciled')) return; /* already done */
+      if (backfillRunning) return;
+      const maxId = db.get('SELECT COALESCE(MAX(id),0) m FROM sms_records')?.m || 0;
+      if (!maxId) { setMeta('p19k_stats_reconciled', '1'); return; }
+      console.log('[STATS-RECONCILE] one-time verification of sms_daily_stats vs sms_records ...');
+      const truth = new Map(); /* key -> {c, pay} */
+      const keyOf = (r) => r.sd + '|' + r.mgr + '|' + r.ag + '|' + r.cl + '|' + r.cli;
+      let last = 0;
+      while (last < maxId) {
+        const hi = Math.min(last + 100000, maxId);
+        const rows = db.all(`SELECT received_at, COALESCE(manager_id,-1) mgr, COALESCE(agent_id,-1) ag, COALESCE(client_id,-1) cl, COALESCE(cli,'') cli,
+            COALESCE(CAST(COALESCE(NULLIF(payout_amount,''),'0') AS REAL),0) pay
+          FROM sms_records WHERE id > ? AND id <= ? AND COALESCE(is_test,0)=0`, [last, hi]);
+        for (const r of rows) {
+          const k = keyOf({ ...r, sd: ukStatDate(r.received_at) });
+          const cur = truth.get(k);
+          if (cur) { cur.c += 1; cur.pay += r.pay; }
+          else truth.set(k, { c: 1, pay: r.pay });
+        }
+        last = hi;
+        await new Promise(r => setImmediate(r)); /* event loop kabhi block nahi */
+      }
+      const statsRows = db.all('SELECT stat_date, manager_id, agent_id, client_id, cli, sms_count, payout_sum FROM sms_daily_stats');
+      let mismatch = 0;
+      const seenKeys = new Set();
+      for (const s of statsRows) {
+        const k = s.stat_date + '|' + s.manager_id + '|' + s.agent_id + '|' + s.client_id + '|' + s.cli;
+        seenKeys.add(k);
+        const t = truth.get(k);
+        if (!t || t.c !== s.sms_count || Math.abs((t.pay || 0) - (s.payout_sum || 0)) > 1e-6) mismatch++;
+      }
+      for (const k of truth.keys()) if (!seenKeys.has(k)) mismatch++;
+      if (!mismatch) {
+        setMeta('p19k_stats_reconciled', '1');
+        console.log('[STATS-RECONCILE] OK — sms_daily_stats matches sms_records exactly (' + statsRows.length + ' keys).');
+        return;
+      }
+      console.warn('[STATS-RECONCILE] MISMATCH found (' + mismatch + ' keys) — rebuilding sms_daily_stats from authoritative sms_records ...');
+      db.runNoSave('DELETE FROM sms_daily_stats');
+      setMeta('stats_backfill_max_id', '0');
+      setMeta('stats_backfill_done', '0');
+      const r = await backfillSmsStats(null);
+      setMeta('p19k_stats_reconciled', '1');
+      try { logAction({}, 'stats_boot_reconcile', 'system', { mismatchedKeys: mismatch, backfill: r }); } catch (_) {}
+      console.log('[STATS-RECONCILE] rebuild done:', JSON.stringify(r));
+    } catch (e) {
+      console.error('[STATS-RECONCILE] failed (will retry next boot):', e.message);
+    }
+  })();
 })();
